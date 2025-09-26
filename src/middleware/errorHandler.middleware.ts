@@ -1,32 +1,79 @@
 import { Request, Response, NextFunction } from 'express';
 import { logger } from '../utils/logger';
-import { HTTP_STATUS } from '../utils/constants';
 
-export const notFoundHandler = (req: Request, res: Response) => {
-  res.status(HTTP_STATUS.NOT_FOUND).json({
-    success: false,
-    message: `Not Found - ${req.method} ${req.url}`,
-    error: 'Resource not found'
-  });
-};
+interface AppError extends Error {
+  statusCode?: number;
+  isOperational?: boolean;
+}
 
 export const errorHandler = (
-  err: any,
+  error: AppError,
   req: Request,
   res: Response,
   next: NextFunction
-) => {
-  logger.error(`${err.name}: ${err.message}`, {
-    stack: err.stack,
-    url: req.url,
-    method: req.method
-  });
+): void => {
+  let statusCode = error.statusCode || 500;
+  let message = error.message || 'Internal Server Error';
 
-  const statusCode = err.statusCode || HTTP_STATUS.INTERNAL_SERVER_ERROR;
-  
+  // Mongoose validation error
+  if (error.name === 'ValidationError') {
+    statusCode = 400;
+    message = Object.values((error as any).errors).map((err: any) => err.message).join(', ');
+  }
+
+  // Mongoose duplicate key error
+  if ((error as any).code === 11000) {
+    statusCode = 400;
+    const field = Object.keys((error as any).keyPattern)[0];
+    message = `${field} already exists`;
+  }
+
+  // Mongoose cast error (invalid ObjectId)
+  if (error.name === 'CastError') {
+    statusCode = 400;
+    message = 'Invalid ID format';
+  }
+
+  // JWT errors
+  if (error.name === 'JsonWebTokenError') {
+    statusCode = 401;
+    message = 'Invalid token';
+  }
+
+  if (error.name === 'TokenExpiredError') {
+    statusCode = 401;
+    message = 'Token expired';
+  }
+
+  // Log error
+  if (statusCode >= 500) {
+    logger.error('Server Error:', {
+      error: error.message,
+      stack: error.stack,
+      url: req.url,
+      method: req.method,
+      ip: req.ip,
+      userAgent: req.get('User-Agent')
+    });
+  } else {
+    logger.warn('Client Error:', {
+      error: message,
+      url: req.url,
+      method: req.method,
+      ip: req.ip
+    });
+  }
+
   res.status(statusCode).json({
     success: false,
-    message: err.message || 'Internal Server Error',
-    ...(process.env.NODE_ENV !== 'production' && { stack: err.stack })
+    message,
+    ...(process.env.NODE_ENV === 'development' && { stack: error.stack })
+  });
+};
+
+export const notFoundHandler = (req: Request, res: Response): void => {
+  res.status(404).json({
+    success: false,
+    message: `Route ${req.originalUrl} not found`
   });
 };

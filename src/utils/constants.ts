@@ -21,3 +21,16 @@ export const MAX_FILE_SIZE = {
   VIDEO: 500 * 1024 * 1024, // 500MB
   IMAGE: 10 * 1024 * 1024   // 10MB
 };
+
+export const EXPORT_STATUS = {
+  PENDING: 'pending',
+  PROCESSING: 'processing',
+  COMPLETED: 'completed',
+  FAILED: 'failed'
+};
+
+export const LAYER_TYPES = {
+  HIGHLIGHT: 'highlight',
+  ZOOM: 'zoom',
+  BLUR: 'blur'
+};

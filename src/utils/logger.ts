@@ -14,17 +14,18 @@ export const logger = winston.createLogger({
     new winston.transports.File({ 
       filename: 'logs/error.log', 
       level: 'error',
-      maxsize: 10485760,
+      maxsize: 10485760, // 10MB
       maxFiles: 5
     }),
     new winston.transports.File({ 
       filename: 'logs/combined.log',
-      maxsize: 10485760,
+      maxsize: 10485760, // 10MB
       maxFiles: 5
     })
   ]
 });
 
+// Console logging in development
 if (process.env.NODE_ENV !== 'production') {
   logger.add(new winston.transports.Console({
     format: winston.format.combine(

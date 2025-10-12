@@ -1,9 +1,13 @@
-import { NextFunction, Request, Response } from 'express';
-import { Project } from '../models/project.model';
-import { logger } from '../utils/logger';
+import { Request, Response, NextFunction } from "express";
+import { Project } from "../models/project.model";
+import { logger } from "../utils/logger";
 
 export class ProjectController {
-  public async getProjects(req: Request, res: Response, next: NextFunction): Promise<void> {
+  public async getProjects(
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
     try {
       const userId = (req as any).userId;
       const page = parseInt(req.query.page as string) || 1;
@@ -11,7 +15,7 @@ export class ProjectController {
       const skip = (page - 1) * limit;
 
       const projects = await Project.find({ userId })
-        .select('title thumbnailUrl previewUrl createdAt updatedAt')
+        .select("title thumbnailUrl previewUrl createdAt updatedAt")
         .sort({ updatedAt: -1 })
         .skip(skip)
         .limit(limit);
@@ -21,43 +25,48 @@ export class ProjectController {
       res.json({
         success: true,
         data: {
-          projects: projects.map(project => ({
+          projects: projects.map((project) => ({
             id: project._id,
             title: project.title,
             thumbnailUrl: project.thumbnailUrl,
             previewUrl: project.previewUrl,
             editLink: `/edit/${project._id}`,
             createdAt: project.createdAt,
-            updatedAt: project.updatedAt
+            updatedAt: project.updatedAt,
           })),
           pagination: {
             current: page,
             pages: Math.ceil(total / limit),
-            total
-          }
-        }
+            total,
+          },
+        },
       });
     } catch (error) {
-      logger.error('Get projects error:', error);
+      logger.error("Get projects error:", error);
       next(error);
     }
   }
 
-  public async createProject(req: Request, res: Response, next: NextFunction): Promise<void> {
+  public async createProject(
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
     try {
       const userId = (req as any).userId;
       const { title } = req.body;
 
+      // ✅ IMPROVED: Create project with proper default values
       const project = new Project({
         title,
         userId,
         compositionSettings: {
-          videoUrl: '',
+          videoUrl: "", // Empty string for new projects
           layers: [],
           fps: 30,
           width: 1920,
-          height: 1080
-        }
+          height: 1080,
+        },
       });
 
       await project.save();
@@ -66,23 +75,27 @@ export class ProjectController {
 
       res.status(201).json({
         success: true,
-        message: 'Project created successfully',
+        message: "Project created successfully",
         data: {
           project: {
             id: project._id,
             title: project.title,
             editLink: `/edit/${project._id}`,
-            createdAt: project.createdAt
-          }
-        }
+            createdAt: project.createdAt,
+          },
+        },
       });
     } catch (error) {
-      logger.error('Create project error:', error);
+      logger.error("Create project error:", error);
       next(error);
     }
   }
 
-  public async getProject(req: Request, res: Response, next: NextFunction): Promise<void> {
+  public async getProject(
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
     try {
       const userId = (req as any).userId;
       const { projectId } = req.params;
@@ -92,7 +105,7 @@ export class ProjectController {
       if (!project) {
         res.status(404).json({
           success: false,
-          message: 'Project not found'
+          message: "Project not found",
         });
         return;
       }
@@ -107,17 +120,21 @@ export class ProjectController {
             previewUrl: project.previewUrl,
             compositionSettings: project.compositionSettings,
             createdAt: project.createdAt,
-            updatedAt: project.updatedAt
-          }
-        }
+            updatedAt: project.updatedAt,
+          },
+        },
       });
     } catch (error) {
-      logger.error('Get project error:', error);
+      logger.error("Get project error:", error);
       next(error);
     }
   }
 
-  public async updateProject(req: Request, res: Response, next: NextFunction): Promise<void> {
+  public async updateProject(
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
     try {
       const userId = (req as any).userId;
       const { projectId } = req.params;
@@ -132,7 +149,7 @@ export class ProjectController {
       if (!project) {
         res.status(404).json({
           success: false,
-          message: 'Project not found'
+          message: "Project not found",
         });
         return;
       }
@@ -141,33 +158,46 @@ export class ProjectController {
 
       res.json({
         success: true,
-        message: 'Project updated successfully',
+        message: "Project updated successfully",
         data: {
           project: {
             id: project._id,
             title: project.title,
             compositionSettings: project.compositionSettings,
-            updatedAt: project.updatedAt
-          }
-        }
+            updatedAt: project.updatedAt,
+          },
+        },
       });
     } catch (error) {
-      logger.error('Update project error:', error);
+      logger.error("Update project error:", error);
       next(error);
     }
   }
 
-  public async autosave(req: Request, res: Response, next: NextFunction): Promise<void> {
+  public async autosave(
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
     try {
       const userId = (req as any).userId;
       const { projectId } = req.params;
       const { compositionSettings } = req.body;
 
+      // ✅ IMPROVED: Only update if compositionSettings is provided
+      if (!compositionSettings) {
+        res.status(400).json({
+          success: false,
+          message: "compositionSettings is required",
+        });
+        return;
+      }
+
       const project = await Project.findOneAndUpdate(
         { _id: projectId, userId },
-        { 
+        {
           compositionSettings,
-          updatedAt: new Date()
+          updatedAt: new Date(),
         },
         { new: true }
       );
@@ -175,35 +205,42 @@ export class ProjectController {
       if (!project) {
         res.status(404).json({
           success: false,
-          message: 'Project not found'
+          message: "Project not found",
         });
         return;
       }
 
       res.json({
         success: true,
-        message: 'Project autosaved',
+        message: "Project autosaved",
         data: {
-          updatedAt: project.updatedAt
-        }
+          updatedAt: project.updatedAt,
+        },
       });
     } catch (error) {
-      logger.error('Autosave error:', error);
+      logger.error("Autosave error:", error);
       next(error);
     }
   }
 
-  public async deleteProject(req: Request, res: Response, next: NextFunction): Promise<void> {
+  public async deleteProject(
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
     try {
       const userId = (req as any).userId;
       const { projectId } = req.params;
 
-      const project = await Project.findOneAndDelete({ _id: projectId, userId });
+      const project = await Project.findOneAndDelete({
+        _id: projectId,
+        userId,
+      });
 
       if (!project) {
         res.status(404).json({
           success: false,
-          message: 'Project not found'
+          message: "Project not found",
         });
         return;
       }
@@ -212,10 +249,10 @@ export class ProjectController {
 
       res.json({
         success: true,
-        message: 'Project deleted successfully'
+        message: "Project deleted successfully",
       });
     } catch (error) {
-      logger.error('Delete project error:', error);
+      logger.error("Delete project error:", error);
       next(error);
     }
   }

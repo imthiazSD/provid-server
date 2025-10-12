@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 
 services:
   app:
@@ -7,7 +7,7 @@ services:
       - "5000:5000"
     environment:
       - NODE_ENV=development
-      - MONGODB_URI=mongodb://mongo:27017/video-editor
+      - MONGODB_URI=mongodb://admin:password@mongo:27017/video-editor?authSource=admin
       - JWT_SECRET=your-super-secret-jwt-key
       - JWT_EXPIRES_IN=7d
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}

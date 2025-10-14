@@ -1,45 +1,32 @@
-import { Router } from 'express';
-import multer from 'multer';
-import { UploadController } from '../controllers/upload.controller';
-import { authMiddleware } from '../middleware/auth.middleware';
-import { FILE_TYPES, MAX_FILE_SIZE } from '../utils/constants';
+import { Router } from "express";
+import { UploadController } from "../controllers/upload.controller";
+import { authMiddleware } from "../middleware/auth.middleware";
+import { upload } from "../middleware/upload.middleware";
 
 const router = Router();
 const uploadController = new UploadController();
 
-// Configure multer for memory storage
-const videoUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: MAX_FILE_SIZE.VIDEO
-  },
-  fileFilter: (req, file, cb) => {
-    if (FILE_TYPES.VIDEO.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Invalid file type. Only video files are allowed.'));
-    }
-  }
-});
+// Upload video
+router.post(
+  "/projects/:projectId/video",
+  authMiddleware,
+  upload.single("video"),
+  uploadController.uploadVideo.bind(uploadController)
+);
 
-const imageUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: MAX_FILE_SIZE.IMAGE
-  },
-  fileFilter: (req, file, cb) => {
-    if (FILE_TYPES.IMAGE.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Invalid file type. Only image files are allowed.'));
-    }
-  }
-});
+// Upload thumbnail
+router.post(
+  "/projects/:projectId/thumbnail",
+  authMiddleware,
+  upload.single("thumbnail"),
+  uploadController.uploadThumbnail.bind(uploadController)
+);
 
-// All routes require authentication
-router.use(authMiddleware);
-
-router.post('/:projectId/video', videoUpload.single('video'), uploadController.uploadVideo.bind(uploadController));
-router.post('/:projectId/thumbnail', imageUpload.single('thumbnail'), uploadController.uploadThumbnail.bind(uploadController));
+// Delete video (NEW)
+router.delete(
+  "/projects/:projectId/video",
+  authMiddleware,
+  uploadController.deleteVideo.bind(uploadController)
+);
 
 export default router;

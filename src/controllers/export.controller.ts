@@ -2,15 +2,15 @@ import { NextFunction, Request, Response } from 'express';
 import { ExportRequest } from '../models/export.model';
 import { Project } from '../models/project.model';
 import { NotificationService } from '../services/notification.service';
-import { SQSService } from '../services/sqs.service';
+import { RemotionSQSService } from '../services/remotion-sqs.service';
 import { logger } from '../utils/logger';
 
 export class ExportController {
-  private sqsService: SQSService;
+  private remotionSQSService: RemotionSQSService;
   private notificationService: NotificationService;
 
   constructor() {
-    this.sqsService = new SQSService();
+    this.remotionSQSService = new RemotionSQSService();
     this.notificationService = new NotificationService();
   }
 
@@ -18,6 +18,7 @@ export class ExportController {
     try {
       const userId = (req as any).userId;
       const { projectId } = req.params;
+      const { compositionId, codec } = req.body;
 
       // Verify project ownership
       const project = await Project.findOne({ _id: projectId, userId });
@@ -66,31 +67,38 @@ export class ExportController {
 
       await exportRequest.save();
 
-      // Prepare message for SQS
-      const messageBody = {
-        exportId: exportRequest._id,
-        projectId: project._id,
-        userId: userId,
-        compositionSettings: project.compositionSettings,
-        timestamp: new Date().toISOString()
-      };
+      // Prepare webhook URL for status updates
+      const webhookUrl = `${process.env.API_BASE_URL}/api/exports/webhook`;
 
-      // Send message to SQS queue
-      const messageId = await this.sqsService.sendMessage(JSON.stringify(messageBody));
-      
-      // Update export request with message ID
+      // Enqueue render request to SQS
+      // The Lambda function will pick this message and call renderMediaOnLambda
+      const messageId = await this.remotionSQSService.enqueueRenderRequest({
+        exportId: exportRequest._id.toString(),
+        projectId: project._id.toString(),
+        userId: userId,
+        compositionId: compositionId || 'MainComposition',
+        inputProps: {
+          ...project.compositionSettings,
+          projectId: project._id.toString()
+        },
+        codec: codec || 'h264',
+        webhookUrl: webhookUrl
+      });
+
+      // Update export request with queue message ID
       exportRequest.queueMessageId = messageId;
       await exportRequest.save();
 
-      logger.info(`Export request queued: ${exportRequest._id} for project: ${projectId}`);
+      logger.info(`Export request queued: ${exportRequest._id} for project: ${projectId}, messageId: ${messageId}`);
 
       res.json({
         success: true,
         message: 'Export request queued successfully',
         data: {
           exportId: exportRequest._id,
+          queueMessageId: messageId,
           status: exportRequest.status,
-          estimatedTime: '5-10 minutes'
+          estimatedTime: '2-5 minutes'
         }
       });
     } catch (error) {
@@ -115,6 +123,19 @@ export class ExportController {
         return;
       }
 
+      // If still processing and we have renderId, get live progress from Remotion
+      let progress = null;
+      if (exportRequest.status === 'processing' && exportRequest.renderId && exportRequest.bucketName) {
+        try {
+          progress = await this.remotionSQSService.getRenderProgress(
+            exportRequest.renderId,
+            exportRequest.bucketName
+          );
+        } catch (error) {
+          logger.error('Failed to get render progress:', error);
+        }
+      }
+
       res.json({
         success: true,
         data: {
@@ -123,6 +144,10 @@ export class ExportController {
           status: exportRequest.status,
           outputUrl: exportRequest.outputUrl,
           errorMessage: exportRequest.errorMessage,
+          progress: progress ? {
+            overallProgress: progress.overallProgress,
+            done: progress.done
+          } : null,
           createdAt: exportRequest.createdAt,
           updatedAt: exportRequest.updatedAt
         }
@@ -173,42 +198,95 @@ export class ExportController {
     }
   }
 
-  public async updateExportStatus(req: Request, res: Response, next: NextFunction): Promise<void> {
+  /**
+   * Webhook endpoint that receives updates from the Lambda render function
+   * The Lambda function calls this after renderMediaOnLambda completes/fails
+   */
+  public async handleWebhook(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { exportId, status, outputUrl, errorMessage } = req.body;
+      const { 
+        type, 
+        exportId, 
+        renderId, 
+        bucketName, 
+        outputFile, 
+        errors 
+      } = req.body;
+
+      // Verify webhook signature if configured
+      const signature = req.headers['x-remotion-signature'];
+      if (process.env.WEBHOOK_SECRET && signature) {
+        // Implement signature verification logic here
+      }
 
       const exportRequest = await ExportRequest.findById(exportId);
       if (!exportRequest) {
-        res.status(404).json({
-          success: false,
-          message: 'Export request not found'
-        });
+        res.status(404).json({ success: false, message: 'Export not found' });
         return;
       }
 
-      // Update export status
-      exportRequest.status = status;
-      if (outputUrl) exportRequest.outputUrl = outputUrl;
-      if (errorMessage) exportRequest.errorMessage = errorMessage;
-      exportRequest.updatedAt = new Date();
-      
-      await exportRequest.save();
+      // Handle different webhook types
+      switch (type) {
+        case 'render_started':
+          exportRequest.status = 'processing';
+          exportRequest.renderId = renderId;
+          exportRequest.bucketName = bucketName;
+          await exportRequest.save();
 
-      // Send notification to user
-      await this.notificationService.sendExportNotification(
-        exportRequest.userId.toString(),
-        exportRequest,
-        status
-      );
+          logger.info(`Render started: ${exportId}, renderId: ${renderId}`);
+          break;
 
-      logger.info(`Export status updated: ${exportId} - ${status}`);
+        case 'render_success':
+          exportRequest.status = 'completed';
+          exportRequest.outputUrl = outputFile;
+          exportRequest.renderId = renderId;
+          exportRequest.bucketName = bucketName;
+          await exportRequest.save();
 
-      res.json({
-        success: true,
-        message: 'Export status updated successfully'
-      });
+          await this.notificationService.sendExportNotification(
+            exportRequest.userId.toString(),
+            exportRequest,
+            'completed'
+          );
+
+          logger.info(`Export completed: ${exportId}`);
+          break;
+
+        case 'render_error':
+          exportRequest.status = 'failed';
+          exportRequest.errorMessage = errors?.[0]?.message || 'Render failed';
+          await exportRequest.save();
+
+          await this.notificationService.sendExportNotification(
+            exportRequest.userId.toString(),
+            exportRequest,
+            'failed'
+          );
+
+          logger.error(`Export failed: ${exportId}`, errors);
+          break;
+
+        case 'render_timeout':
+          exportRequest.status = 'failed';
+          exportRequest.errorMessage = 'Render timeout';
+          await exportRequest.save();
+
+          await this.notificationService.sendExportNotification(
+            exportRequest.userId.toString(),
+            exportRequest,
+            'failed'
+          );
+
+          logger.error(`Export timeout: ${exportId}`);
+          break;
+
+        default:
+          logger.warn(`Unknown webhook type: ${type}`);
+      }
+
+      res.json({ success: true });
     } catch (error) {
-      logger.error('Update export status error:', error);
+      logger.error('Webhook handler error:', error);
       next(error);
     }
   }

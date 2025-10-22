@@ -4,9 +4,11 @@ export interface IExportRequest extends Document {
   projectId: mongoose.Types.ObjectId;
   userId: mongoose.Types.ObjectId;
   status: 'pending' | 'processing' | 'completed' | 'failed';
+  renderId?: string; // Remotion render ID
+  bucketName?: string; // S3 bucket name from Remotion
+  queueMessageId?: string; // SQS message ID (if using custom queue)
   outputUrl?: string;
   errorMessage?: string;
-  queueMessageId?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -15,36 +17,51 @@ const exportRequestSchema = new Schema<IExportRequest>({
   projectId: {
     type: Schema.Types.ObjectId,
     ref: 'Project',
-    required: true
+    required: true,
+    index: true
   },
   userId: {
     type: Schema.Types.ObjectId,
     ref: 'User',
-    required: true
+    required: true,
+    index: true
   },
   status: {
     type: String,
     enum: ['pending', 'processing', 'completed', 'failed'],
-    default: 'pending'
+    default: 'pending',
+    index: true
   },
-  outputUrl: {
+  renderId: {
     type: String,
-    trim: true
+    sparse: true,
+    index: true
   },
-  errorMessage: {
-    type: String,
-    trim: true
+  bucketName: {
+    type: String
   },
   queueMessageId: {
-    type: String,
-    trim: true
+    type: String
+  },
+  outputUrl: {
+    type: String
+  },
+  errorMessage: {
+    type: String
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now,
+    index: true
+  },
+  updatedAt: {
+    type: Date,
+    default: Date.now
   }
-}, {
-  timestamps: true
 });
 
-// Index for better query performance
+// Index for finding active exports
+exportRequestSchema.index({ projectId: 1, status: 1 });
 exportRequestSchema.index({ userId: 1, createdAt: -1 });
-exportRequestSchema.index({ status: 1, createdAt: -1 });
 
 export const ExportRequest = mongoose.model<IExportRequest>('ExportRequest', exportRequestSchema);

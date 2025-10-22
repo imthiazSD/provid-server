@@ -27,6 +27,8 @@
     "@aws-sdk/client-s3": "^3.450.0",
     "@aws-sdk/client-sqs": "^3.450.0",
     "@aws-sdk/s3-request-presigner": "^3.908.0",
+    "@remotion/lambda": "^4.0.364",
+    "axios": "^1.12.2",
     "bcryptjs": "^2.4.3",
     "compression": "^1.7.4",
     "cors": "^2.8.5",

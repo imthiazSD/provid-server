@@ -53,7 +53,6 @@ echo ""
 # Step 2: Create IAM Role for Lambda Worker
 echo "2️⃣  Creating IAM Role: $LAMBDA_ROLE_NAME..."
 
-# Create trust policy
 cat > /tmp/trust-policy.json <<EOF
 {
   "Version": "2012-10-17",
@@ -69,7 +68,6 @@ cat > /tmp/trust-policy.json <<EOF
 }
 EOF
 
-# Create role
 ROLE_ARN=$(aws iam create-role \
   --role-name $LAMBDA_ROLE_NAME \
   --assume-role-policy-document file:///tmp/trust-policy.json \
@@ -82,13 +80,11 @@ echo ""
 # Step 3: Attach Policies to Worker Role
 echo "3️⃣  Attaching policies to worker role..."
 
-# Basic Lambda execution
 aws iam attach-role-policy \
   --role-name $LAMBDA_ROLE_NAME \
   --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole \
   2>/dev/null || true
 
-# SQS permissions
 cat > /tmp/sqs-policy.json <<EOF
 {
   "Version": "2012-10-17",
@@ -112,7 +108,6 @@ aws iam put-role-policy \
   --policy-name sqs-policy \
   --policy-document file:///tmp/sqs-policy.json
 
-# S3 permissions for Lambda deployment package
 cat > /tmp/s3-policy.json <<EOF
 {
   "Version": "2012-10-17",
@@ -120,7 +115,9 @@ cat > /tmp/s3-policy.json <<EOF
     {
       "Effect": "Allow",
       "Action": [
-        "s3:GetObject"
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject"
       ],
       "Resource": "arn:aws:s3:::$BUCKET_NAME/*"
     }
@@ -136,7 +133,6 @@ aws iam put-role-policy \
 echo "✅ Policies attached"
 echo ""
 
-# Wait for IAM role to propagate
 echo "⏳ Waiting for IAM role to propagate (10 seconds)..."
 sleep 10
 
@@ -145,31 +141,26 @@ echo "4️⃣  Building Lambda function..."
 
 cd lambda/render-function
 
-# Verify package.json exists
 if [ ! -f package.json ]; then
     echo "❌ package.json not found in lambda/render-function"
     exit 1
 fi
 
-# Install dependencies
 if ! npm install; then
     echo "❌ Failed to install dependencies"
     exit 1
 fi
 
-# Verify @types/aws-lambda is installed
 if [ ! -d "node_modules/@types/aws-lambda" ]; then
     echo "Installing @types/aws-lambda..."
-    npm install --save-dev @types/aws-lambda@^8.10.130
+    npm install --save-dev @types/aws-lambda@^8.10.145
 fi
 
-# Prune dev dependencies
 if ! npm prune --production; then
     echo "❌ Failed to prune dev dependencies"
     exit 1
 fi
 
-# Build TypeScript
 if ! npm run build; then
     echo "❌ TypeScript compilation failed"
     echo "Please check lambda/render-function/index.ts for errors"
@@ -177,7 +168,6 @@ if ! npm run build; then
     exit 1
 fi
 
-# Create deployment package
 echo "📦 Creating deployment package..."
 cd dist
 if ! zip -r ../function.zip . -x "*.map" > /dev/null; then
@@ -190,7 +180,6 @@ if ! zip -r function.zip node_modules -x "*.md" "*.txt" "test/*" "tests/*" "*.ts
     exit 1
 fi
 
-# Verify package size
 ZIP_SIZE=$(stat -f%z function.zip 2>/dev/null || stat -c%s function.zip)
 if [ $ZIP_SIZE -gt 52428800 ]; then
     echo "⚠️ Warning: function.zip is $(($ZIP_SIZE / 1048576)) MB (zipped). Unzipped size must be < 250 MB for S3 deployment."
@@ -204,26 +193,20 @@ echo "4️⃣.5 Setting up Remotion Lambda IAM infrastructure..."
 
 cd ../../
 
-# Ensure Remotion Lambda dependencies are installed
 if [ ! -d "node_modules/@remotion/lambda" ]; then
     echo "Installing Remotion Lambda dependencies..."
-    npm install @remotion/lambda @remotion/cli @remotion/renderer
+    npm install @remotion/lambda@4.0.365 @remotion/cli@4.0.365 @remotion/renderer
     echo "✅ Dependencies installed"
 fi
 
-# Use local node_modules binaries
 export PATH="$(pwd)/node_modules/.bin:$PATH"
 
-# Get AWS Account ID
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
-# Check if remotion-lambda-role exists
 REMOTION_ROLE_EXISTS=$(aws iam get-role --role-name remotion-lambda-role 2>/dev/null && echo "true" || echo "false")
 
 if [ "$REMOTION_ROLE_EXISTS" = "false" ]; then
     echo "Creating remotion-lambda-role..."
-    
-    # Create trust policy for Remotion Lambda role
     cat > /tmp/remotion-trust-policy.json <<'EOF'
 {
   "Version": "2012-10-17",
@@ -238,53 +221,37 @@ if [ "$REMOTION_ROLE_EXISTS" = "false" ]; then
   ]
 }
 EOF
-
-    # Create the role
     aws iam create-role \
       --role-name remotion-lambda-role \
       --assume-role-policy-document file:///tmp/remotion-trust-policy.json \
       > /dev/null
-    
     echo "✅ remotion-lambda-role created"
 else
     echo "✅ remotion-lambda-role already exists"
 fi
 
-# Get and attach the inline policy for remotion-lambda-role from Remotion CLI
 echo "Configuring remotion-lambda-role inline policy..."
 ./node_modules/.bin/remotion lambda policies role > /tmp/remotion-lambda-policy.json
-
 aws iam put-role-policy \
   --role-name remotion-lambda-role \
   --policy-name remotion-lambda-policy \
   --policy-document file:///tmp/remotion-lambda-policy.json
-
 echo "✅ remotion-lambda-role inline policy configured"
 
-# Check if remotion-executionrole-policy exists (managed policy for worker Lambda)
 EXECUTION_POLICY_EXISTS=$(aws iam get-policy --policy-arn arn:aws:iam::${AWS_ACCOUNT_ID}:policy/remotion-executionrole-policy 2>/dev/null && echo "true" || echo "false")
 
 if [ "$EXECUTION_POLICY_EXISTS" = "false" ]; then
     echo "Creating remotion-executionrole-policy (managed policy)..."
-    
-    # Get the user/execution policy from Remotion CLI
     ./node_modules/.bin/remotion lambda policies user > /tmp/remotion-execution-policy.json
-    
-    # Create managed policy
     aws iam create-policy \
       --policy-name remotion-executionrole-policy \
       --policy-document file:///tmp/remotion-execution-policy.json \
       > /dev/null
-    
     echo "✅ remotion-executionrole-policy created"
 else
     echo "✅ remotion-executionrole-policy already exists"
-    
-    # Optionally update the policy if it exists
     echo "Updating remotion-executionrole-policy..."
     ./node_modules/.bin/remotion lambda policies user > /tmp/remotion-execution-policy.json
-    
-    # Create a new version (AWS automatically manages version limits)
     aws iam create-policy-version \
       --policy-arn arn:aws:iam::${AWS_ACCOUNT_ID}:policy/remotion-executionrole-policy \
       --policy-document file:///tmp/remotion-execution-policy.json \
@@ -292,7 +259,6 @@ else
       2>/dev/null || echo "   (Using existing policy version)"
 fi
 
-# Attach execution policy to worker Lambda role
 echo "Attaching remotion-executionrole-policy to worker Lambda role..."
 aws iam attach-role-policy \
   --role-name $LAMBDA_ROLE_NAME \
@@ -301,15 +267,19 @@ aws iam attach-role-policy \
 
 echo "✅ Worker Lambda role configured"
 
-# Validate the setup
 echo "Validating Remotion policies..."
-if ./node_modules/.bin/remotion lambda policies validate --region $REGION 2>&1 | grep -q "success\|valid"; then
-    echo "✅ Remotion policies validated successfully"
+VALIDATION_OUTPUT=$(./node_modules/.bin/remotion lambda policies validate --region $REGION --log=verbose 2>&1)
+if echo "$VALIDATION_OUTPUT" | grep -qi "AccessDenied\|Unauthorized\|failed"; then
+    echo "❌ Policy validation failed."
+    echo "$VALIDATION_OUTPUT"
+    echo "Check IAM permissions for user 'projectx-app-user'."
+    echo "Run: ./node_modules/.bin/remotion lambda policies validate --region $REGION --log=verbose"
+    echo "See troubleshooting: https://remotion.dev/docs/lambda/troubleshooting/permissions"
+    exit 1
 else
-    echo "⚠️  Policy validation completed (warnings are normal for new setups)"
+    echo "✅ Remotion policies validated successfully"
 fi
 
-# Wait for policies to propagate globally
 echo "⏳ Waiting for IAM policies to propagate globally (15 seconds)..."
 sleep 15
 
@@ -318,16 +288,18 @@ echo ""
 # Step 5: Deploy Remotion Lambda
 echo "5️⃣  Deploying Remotion Lambda function..."
 
-REMOTION_FUNCTION_NAME=$(./node_modules/.bin/remotion lambda functions ls --region $REGION 2>/dev/null | grep -oP 'remotion-render-\S+' | head -1 || echo "")
+# Try listing existing functions first
+REMOTION_FUNCTION_NAME=$(./node_modules/.bin/remotion lambda functions ls --region $REGION --log=verbose 2>/dev/null | grep 'remotion-render-' | awk '{print $1}' | head -1 || echo "")
 
 if [ -z "$REMOTION_FUNCTION_NAME" ]; then
     echo "Deploying Remotion Lambda function..."
-    
-    if ./node_modules/.bin/remotion lambda functions deploy --region $REGION; then
-        REMOTION_FUNCTION_NAME=$(./node_modules/.bin/remotion lambda functions ls --region $REGION | grep -oP 'remotion-render-\S+' | head -1)
+    DEPLOY_OUTPUT=$(./node_modules/.bin/remotion lambda functions deploy --region $REGION --log=verbose 2>&1)
+    if echo "$DEPLOY_OUTPUT" | grep -q "Deployed as remotion-render"; then
+        REMOTION_FUNCTION_NAME=$(echo "$DEPLOY_OUTPUT" | grep 'Deployed as remotion-render-' | awk '{print $3}' | head -1)
         echo "✅ Remotion Lambda function deployed: $REMOTION_FUNCTION_NAME"
     else
         echo "❌ Failed to deploy Remotion Lambda function"
+        echo "$DEPLOY_OUTPUT"
         echo "Please check:"
         echo "  1. Run: ./node_modules/.bin/remotion lambda policies validate --region $REGION"
         echo "  2. Check IAM permissions"
@@ -338,26 +310,28 @@ else
     echo "✅ Remotion Lambda function already exists: $REMOTION_FUNCTION_NAME"
 fi
 
+if [ -z "$REMOTION_FUNCTION_NAME" ]; then
+    echo "❌ REMOTION_FUNCTION_NAME is empty. Cannot proceed."
+    exit 1
+fi
+
 echo ""
 
 # Step 5.5: Deploy Remotion Site
 echo "5️⃣.5 Deploying Remotion site..."
 
-# Check if site already exists
-SITE_CHECK=$(./node_modules/.bin/remotion lambda sites ls --region $REGION 2>/dev/null || echo "")
-REMOTION_SERVE_URL=$(echo "$SITE_CHECK" | grep -oP 'https://\S+' | head -1)
+SITE_CHECK=$(./node_modules/.bin/remotion lambda sites ls --region $REGION --log=verbose 2>/dev/null || echo "")
+REMOTION_SERVE_URL=$(echo "$SITE_CHECK" | grep 'https://remotionlambda-' | awk '{print $1}' | head -1 || echo "")
 
 if [ -z "$REMOTION_SERVE_URL" ]; then
     echo "Deploying Remotion site from src/remotion/index.tsx..."
-    
-    # Deploy site pointing to src/remotion/index.tsx
-    if ./node_modules/.bin/remotion lambda sites create src/remotion/index.tsx --region $REGION --log=verbose; then
-        # Get the newly created site URL
-        SITE_CHECK=$(./node_modules/.bin/remotion lambda sites ls --region $REGION 2>/dev/null || echo "")
-        REMOTION_SERVE_URL=$(echo "$SITE_CHECK" | grep -oP 'https://\S+' | head -1)
+    SITE_DEPLOY_OUTPUT=$(./node_modules/.bin/remotion lambda sites create src/remotion/index.tsx --region $REGION --log=verbose 2>&1)
+    if echo "$SITE_DEPLOY_OUTPUT" | grep -q "Serve URL = https://remotionlambda-"; then
+        REMOTION_SERVE_URL=$(echo "$SITE_DEPLOY_OUTPUT" | grep 'Serve URL = https://remotionlambda-' | awk '{print $4}' | head -1)
         echo "✅ Remotion site deployed: $REMOTION_SERVE_URL"
     else
         echo "❌ Failed to deploy Remotion site"
+        echo "$SITE_DEPLOY_OUTPUT"
         echo "Please check:"
         echo "  1. Ensure src/remotion/index.tsx exists and is a valid entry point"
         echo "  2. Check for TypeScript/JSX syntax errors"
@@ -365,13 +339,15 @@ if [ -z "$REMOTION_SERVE_URL" ]; then
         echo "  4. Run with verbose logging: ./node_modules/.bin/remotion lambda sites create src/remotion/index.tsx --region $REGION --log=verbose"
         exit 1
     fi
-    
-    # Navigate to lambda function directory for next steps
     cd lambda/render-function
 else
     echo "✅ Remotion site already exists: $REMOTION_SERVE_URL"
-    # Navigate to lambda function directory for next steps
     cd lambda/render-function
+fi
+
+if [ -z "$REMOTION_SERVE_URL" ]; then
+    echo "❌ REMOTION_SERVE_URL is empty. Cannot proceed."
+    exit 1
 fi
 
 echo ""
@@ -379,23 +355,19 @@ echo ""
 # Step 6: Create/Update Lambda Worker Function
 echo "6️⃣  Deploying Lambda worker function..."
 
-# Check if function exists
 FUNCTION_EXISTS=$(aws lambda get-function --function-name $LAMBDA_FUNCTION_NAME --region $REGION 2>/dev/null && echo "true" || echo "false")
 
-# Prepare environment variables (exclude AWS_REGION)
 ENV_VARS="Variables={REMOTION_LAMBDA_FUNCTION_NAME=$REMOTION_FUNCTION_NAME,REMOTION_SERVE_URL=$REMOTION_SERVE_URL"
 if [ -n "$WEBHOOK_SECRET" ]; then
     ENV_VARS="$ENV_VARS,WEBHOOK_SECRET=$WEBHOOK_SECRET"
 fi
 ENV_VARS="$ENV_VARS}"
 
-# Create S3 bucket for deployment package
 aws s3 mb s3://$BUCKET_NAME --region $REGION 2>/dev/null || echo "S3 bucket already exists or accessible"
 aws s3 cp function.zip s3://$BUCKET_NAME/function.zip
 
 if [ "$FUNCTION_EXISTS" = "false" ]; then
     echo "Creating new Lambda function..."
-    
     aws lambda create-function \
       --function-name $LAMBDA_FUNCTION_NAME \
       --runtime nodejs18.x \
@@ -407,18 +379,15 @@ if [ "$FUNCTION_EXISTS" = "false" ]; then
       --region $REGION \
       --environment "$ENV_VARS" \
       > /dev/null
-    
     echo "✅ Lambda function created"
 else
     echo "Updating existing Lambda function..."
-    
     aws lambda update-function-code \
       --function-name $LAMBDA_FUNCTION_NAME \
       --s3-bucket $BUCKET_NAME \
       --s3-key function.zip \
       --region $REGION \
       > /dev/null
-    
     aws lambda update-function-configuration \
       --function-name $LAMBDA_FUNCTION_NAME \
       --timeout 900 \
@@ -426,21 +395,17 @@ else
       --environment "$ENV_VARS" \
       --region $REGION \
       > /dev/null
-    
     echo "✅ Lambda function updated"
 fi
 
-# Clean up S3 object
 aws s3 rm s3://$BUCKET_NAME/function.zip
 echo ""
 
 # Step 7: Configure SQS Trigger
 echo "7️⃣  Configuring SQS trigger for Lambda..."
 
-# Get Lambda ARN
 LAMBDA_ARN=$(aws lambda get-function --function-name $LAMBDA_FUNCTION_NAME --region $REGION --query 'Configuration.FunctionArn' --output text)
 
-# Create event source mapping
 MAPPING_UUID=$(aws lambda list-event-source-mappings \
   --function-name $LAMBDA_FUNCTION_NAME \
   --region $REGION \
@@ -456,7 +421,6 @@ if [ -z "$MAPPING_UUID" ]; then
       --function-response-types ReportBatchItemFailures \
       --region $REGION \
       > /dev/null
-    
     echo "✅ SQS trigger configured"
 else
     echo "✅ SQS trigger already exists"
@@ -477,7 +441,6 @@ if [ ! -f .env ]; then
     fi
 fi
 
-# Update or add environment variables
 if grep -q "REMOTION_SQS_QUEUE_URL" .env; then
     sed -i.bak "s|REMOTION_SQS_QUEUE_URL=.*|REMOTION_SQS_QUEUE_URL=$QUEUE_URL|" .env
 else
@@ -496,7 +459,6 @@ else
     echo "REMOTION_SERVE_URL=$REMOTION_SERVE_URL" >> .env
 fi
 
-# Add WEBHOOK_SECRET if not present
 if ! grep -q "WEBHOOK_SECRET" .env; then
     echo "WEBHOOK_SECRET=$(openssl rand -hex 32)" >> .env
 fi
@@ -506,7 +468,6 @@ rm -f .env.bak
 echo "✅ .env file updated"
 echo ""
 
-# Summary
 echo "════════════════════════════════════════════════════════════════"
 echo "✅ Infrastructure Setup Complete!"
 echo "════════════════════════════════════════════════════════════════"

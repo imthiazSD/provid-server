@@ -5,6 +5,8 @@ services:
     build: .
     ports:
       - "5000:5000"
+    env_file:
+      - .env
     environment:
       - NODE_ENV=development
       - MONGODB_URI=mongodb://admin:password@mongo:27017/video-editor?authSource=admin
@@ -14,8 +16,10 @@ services:
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       - AWS_S3_BUCKET_NAME=${AWS_S3_BUCKET_NAME}
       - AWS_REGION=${AWS_REGION}
-      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
-      - SQS_QUEUE_URL=${SQS_QUEUE_URL}
+      - REMOTION_SQS_QUEUE_URL=${REMOTION_SQS_QUEUE_URL}
+      - REMOTION_LAMBDA_FUNCTION_NAME=${REMOTION_LAMBDA_FUNCTION_NAME}
+      - REMOTION_SERVE_URL=${REMOTION_SERVE_URL}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET}
     depends_on:
       - mongo
       - redis

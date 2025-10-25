@@ -3,7 +3,7 @@
 # Test Export Script
 # This script helps you test the export functionality
 
-API_URL="${API_URL:-http://localhost:3000}"
+API_URL="${API_URL:-http://localhost:5000}"
 AUTH_TOKEN="${AUTH_TOKEN}"
 
 if [ -z "$AUTH_TOKEN" ]; then

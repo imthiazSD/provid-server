@@ -1,11 +1,11 @@
-import { SQSEvent, SQSRecord } from 'aws-lambda';
-import { renderMediaOnLambda } from '@remotion/lambda/client';
-import axios from 'axios';
+import { SQSEvent, SQSRecord } from "aws-lambda";
+import { renderMediaOnLambda } from "@remotion/lambda/client";
+import axios from "axios";
 
 // Environment variables
 const REMOTION_FUNCTION_NAME = process.env.REMOTION_LAMBDA_FUNCTION_NAME!;
 const REMOTION_SERVE_URL = process.env.REMOTION_SERVE_URL!;
-const AWS_REGION = process.env.AWS_REGION!;
+const AWS_REGION = process.env.AWS_REGION! || "us-east-1";
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
 interface RenderMessage {
@@ -16,7 +16,7 @@ interface RenderMessage {
   renderConfig: {
     compositionId: string;
     inputProps: any;
-    codec: 'h264' | 'h265' | 'vp8' | 'vp9' | 'prores';
+    codec: "h264" | "h265" | "vp8" | "vp9" | "prores";
     webhookUrl?: string;
   };
   timestamp: string;
@@ -26,7 +26,7 @@ interface RenderMessage {
  * Lambda function that processes SQS messages and triggers Remotion renders
  */
 export const handler = async (event: SQSEvent): Promise<any> => {
-  console.log('Received SQS event:', JSON.stringify(event, null, 2));
+  console.log("Received SQS event:", JSON.stringify(event, null, 2));
 
   const results = await Promise.allSettled(
     event.Records.map((record) => processRecord(record))
@@ -35,7 +35,7 @@ export const handler = async (event: SQSEvent): Promise<any> => {
   // Return batch item failures for SQS to retry
   const batchItemFailures = results
     .map((result, index) => {
-      if (result.status === 'rejected') {
+      if (result.status === "rejected") {
         return { itemIdentifier: event.Records[index].messageId };
       }
       return null;
@@ -48,20 +48,20 @@ export const handler = async (event: SQSEvent): Promise<any> => {
 async function processRecord(record: SQSRecord): Promise<void> {
   try {
     const message: RenderMessage = JSON.parse(record.body);
-    
-    console.log('Processing render request:', {
+
+    console.log("Processing render request:", {
       exportId: message.exportId,
       projectId: message.projectId,
-      compositionId: message.renderConfig.compositionId
+      compositionId: message.renderConfig.compositionId,
     });
 
     // Notify webhook that rendering has started
     if (message.renderConfig.webhookUrl) {
       await sendWebhook(message.renderConfig.webhookUrl, {
-        type: 'render_started',
+        type: "render_started",
         exportId: message.exportId,
         projectId: message.projectId,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       });
     }
 
@@ -73,19 +73,19 @@ async function processRecord(record: SQSRecord): Promise<void> {
       composition: message.renderConfig.compositionId,
       inputProps: message.renderConfig.inputProps,
       codec: message.renderConfig.codec,
-      imageFormat: 'jpeg',
+      imageFormat: "jpeg",
       maxRetries: 1,
-      privacy: 'public',
+      privacy: "public",
       outName: `export-${message.exportId}.mp4`,
       downloadBehavior: {
-        type: 'play-in-browser'
-      }
+        type: "play-in-browser",
+      },
     });
 
-    console.log('Render triggered successfully:', {
+    console.log("Render triggered successfully:", {
       exportId: message.exportId,
       renderId,
-      bucketName
+      bucketName,
     });
 
     // Poll for render completion
@@ -95,28 +95,29 @@ async function processRecord(record: SQSRecord): Promise<void> {
       message.exportId,
       message.renderConfig.webhookUrl
     );
-
   } catch (error) {
-    console.error('Error processing record:', error);
-    
+    console.error("Error processing record:", error);
+
     // Try to notify webhook of failure
     try {
       const message: RenderMessage = JSON.parse(record.body);
       if (message.renderConfig.webhookUrl) {
         await sendWebhook(message.renderConfig.webhookUrl, {
-          type: 'render_error',
+          type: "render_error",
           exportId: message.exportId,
-          errors: [{
-            message: error instanceof Error ? error.message : 'Unknown error',
-            stack: error instanceof Error ? error.stack : undefined
-          }],
-          timestamp: new Date().toISOString()
+          errors: [
+            {
+              message: error instanceof Error ? error.message : "Unknown error",
+              stack: error instanceof Error ? error.stack : undefined,
+            },
+          ],
+          timestamp: new Date().toISOString(),
         });
       }
     } catch (webhookError) {
-      console.error('Failed to send error webhook:', webhookError);
+      console.error("Failed to send error webhook:", webhookError);
     }
-    
+
     throw error; // Re-throw to mark as failed in SQS
   }
 }
@@ -127,47 +128,47 @@ async function pollRenderStatus(
   exportId: string,
   webhookUrl?: string
 ): Promise<void> {
-  const { getRenderProgress } = await import('@remotion/lambda/client');
-  
+  const { getRenderProgress } = await import("@remotion/lambda/client");
+
   const maxAttempts = 120; // 10 minutes (5 second intervals)
   let attempts = 0;
 
   while (attempts < maxAttempts) {
-    await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds
-    
+    await new Promise((resolve) => setTimeout(resolve, 5000)); // Wait 5 seconds
+
     try {
       const progress = await getRenderProgress({
         renderId,
         bucketName,
         functionName: REMOTION_FUNCTION_NAME,
-        region: AWS_REGION as any
+        region: AWS_REGION as any,
       });
 
-      console.log('Render progress:', {
+      console.log("Render progress:", {
         exportId,
         progress: progress.overallProgress,
-        done: progress.done
+        done: progress.done,
       });
 
       if (progress.done) {
         // Render completed successfully
         if (webhookUrl) {
           await sendWebhook(webhookUrl, {
-            type: 'render_success',
+            type: "render_success",
             exportId,
             renderId,
             bucketName,
             outputFile: progress.outputFile,
             outputSizeInBytes: progress.outputSizeInBytes,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
           });
         }
-        
-        console.log('Render completed successfully:', {
+
+        console.log("Render completed successfully:", {
           exportId,
-          outputFile: progress.outputFile
+          outputFile: progress.outputFile,
         });
-        
+
         return;
       }
 
@@ -175,20 +176,19 @@ async function pollRenderStatus(
         // Render failed
         if (webhookUrl) {
           await sendWebhook(webhookUrl, {
-            type: 'render_error',
+            type: "render_error",
             exportId,
             renderId,
             bucketName,
             errors: progress.errors,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
           });
         }
-        
-        throw new Error('Render failed with fatal error');
-      }
 
+        throw new Error("Render failed with fatal error");
+      }
     } catch (error) {
-      console.error('Error checking render progress:', error);
+      console.error("Error checking render progress:", error);
       throw error;
     }
 
@@ -198,42 +198,42 @@ async function pollRenderStatus(
   // Timeout
   if (webhookUrl) {
     await sendWebhook(webhookUrl, {
-      type: 'render_timeout',
+      type: "render_timeout",
       exportId,
       renderId,
       bucketName,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     });
   }
 
-  throw new Error('Render timeout');
+  throw new Error("Render timeout");
 }
 
 async function sendWebhook(url: string, payload: any): Promise<void> {
   try {
     const headers: any = {
-      'Content-Type': 'application/json'
+      "Content-Type": "application/json",
     };
 
     // Add signature if webhook secret is configured
     if (WEBHOOK_SECRET) {
-      const crypto = await import('crypto');
+      const crypto = await import("crypto");
       const signature = crypto
-        .createHmac('sha256', WEBHOOK_SECRET)
+        .createHmac("sha256", WEBHOOK_SECRET)
         .update(JSON.stringify(payload))
-        .digest('hex');
-      
-      headers['X-Remotion-Signature'] = signature;
+        .digest("hex");
+
+      headers["X-Remotion-Signature"] = signature;
     }
 
     await axios.post(url, payload, {
       headers,
-      timeout: 10000 // 10 second timeout
+      timeout: 10000, // 10 second timeout
     });
 
-    console.log('Webhook sent successfully:', { url, type: payload.type });
+    console.log("Webhook sent successfully:", { url, type: payload.type });
   } catch (error) {
-    console.error('Failed to send webhook:', error);
+    console.error("Failed to send webhook:", error);
     // Don't throw - webhook failures shouldn't fail the render
   }
 }

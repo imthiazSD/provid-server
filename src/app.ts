@@ -146,7 +146,7 @@ class App {
     this.express.use("/api/auth", authRoutes);
     this.express.use("/api/projects", projectRoutes);
     this.express.use("/api/upload", uploadRoutes);
-    this.express.use("/api/export", exportRoutes);
+    this.express.use("/api/exports", exportRoutes);
 
     // API info endpoint
     this.express.get("/api", (req, res) => {

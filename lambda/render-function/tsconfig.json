@@ -7,10 +7,9 @@
     "strict": true,
     "noImplicitAny": true,
     "esModuleInterop": true,
-    "noEmitOnError": false,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "types": ["node"]
+    "types": ["node", "aws-lambda"]
   },
   "include": ["index.ts"],
   "exclude": ["node_modules"]

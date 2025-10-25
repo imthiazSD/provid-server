@@ -1,6 +1,10 @@
-import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
-import { renderMediaOnLambda, getRenderProgress, AwsRegion } from '@remotion/lambda/client';
-import { logger } from '../utils/logger';
+import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
+import {
+  renderMediaOnLambda,
+  getRenderProgress,
+  AwsRegion,
+} from "@remotion/lambda/client";
+import { logger } from "../utils/logger";
 
 export class RemotionSQSService {
   private sqsClient: SQSClient;
@@ -8,15 +12,21 @@ export class RemotionSQSService {
   private region: AwsRegion;
 
   constructor() {
-    this.region = (process.env.AWS_REGION || 'us-east-1') as AwsRegion;
+    this.region = (process.env.AWS_REGION || "us-east-1") as AwsRegion;
     this.queueUrl = process.env.REMOTION_SQS_QUEUE_URL!;
-    
+    if (!this.queueUrl) {
+      throw new Error("REMOTION_SQS_QUEUE_URL is not set");
+    }
+
     this.sqsClient = new SQSClient({
       region: this.region,
-      credentials: {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!
-      }
+      credentials:
+        process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY
+          ? {
+              accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+              secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+            }
+          : undefined, // Use default credential provider if not set
     });
   }
 
@@ -30,50 +40,58 @@ export class RemotionSQSService {
     userId: string;
     compositionId: string;
     inputProps: any;
-    codec?: 'h264' | 'h265' | 'vp8' | 'vp9' | 'prores';
+    codec?: "h264" | "h265" | "vp8" | "vp9" | "prores";
     webhookUrl?: string;
   }): Promise<string> {
     try {
       const messageBody = {
-        type: 'RENDER_VIDEO',
+        type: "RENDER_VIDEO",
         exportId: params.exportId,
         projectId: params.projectId,
         userId: params.userId,
         renderConfig: {
           compositionId: params.compositionId,
           inputProps: params.inputProps,
-          codec: params.codec || 'h264',
-          webhookUrl: params.webhookUrl
+          codec: params.codec || "h264",
+          webhookUrl: params.webhookUrl,
         },
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       };
 
       const command = new SendMessageCommand({
         QueueUrl: this.queueUrl,
         MessageBody: JSON.stringify(messageBody),
         MessageAttributes: {
-          'MessageType': {
-            StringValue: 'RENDER_VIDEO',
-            DataType: 'String'
+          MessageType: {
+            StringValue: "RENDER_VIDEO",
+            DataType: "String",
           },
-          'ExportId': {
+          ExportId: {
             StringValue: params.exportId,
-            DataType: 'String'
+            DataType: "String",
           },
-          'Timestamp': {
+          Timestamp: {
             StringValue: new Date().toISOString(),
-            DataType: 'String'
-          }
-        }
+            DataType: "String",
+          },
+        },
       });
 
       const response = await this.sqsClient.send(command);
       logger.info(`Render request queued to SQS: ${response.MessageId}`);
-      
       return response.MessageId!;
-    } catch (error) {
-      logger.error('Failed to enqueue render request:', error);
-      throw new Error('Failed to queue render request');
+    } catch (error: any) {
+      logger.error("Failed to enqueue render request:", {
+        error: error.message,
+        code: error.code,
+        stack: error.stack,
+        queueUrl: this.queueUrl,
+        exportId: params.exportId,
+        projectId: params.projectId,
+      });
+      throw new Error(
+        `Failed to queue render request: ${error.message} (Code: ${error.code})`
+      );
     }
   }
 
@@ -84,12 +102,15 @@ export class RemotionSQSService {
   public async getRenderProgress(renderId: string, bucketName: string) {
     try {
       const functionName = process.env.REMOTION_LAMBDA_FUNCTION_NAME!;
-      
+      if (!functionName) {
+        throw new Error("REMOTION_LAMBDA_FUNCTION_NAME is not set");
+      }
+
       const progress = await getRenderProgress({
         renderId,
         bucketName,
         functionName,
-        region: this.region
+        region: this.region,
       });
 
       return {
@@ -100,10 +121,16 @@ export class RemotionSQSService {
         errors: progress.errors,
         fatalErrorEncountered: progress.fatalErrorEncountered,
         currentTime: progress.currentTime,
-        renderMetadata: progress.renderMetadata
+        renderMetadata: progress.renderMetadata,
       };
-    } catch (error) {
-      logger.error('Failed to get render progress:', error);
+    } catch (error: any) {
+      logger.error("Failed to get render progress:", {
+        error: error.message,
+        code: error.code,
+        stack: error.stack,
+        renderId,
+        bucketName,
+      });
       throw error;
     }
   }

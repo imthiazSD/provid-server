@@ -12,6 +12,8 @@ import {
 import { Upload } from "@aws-sdk/lib-storage";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { logger } from "../utils/logger";
+import dotenv from "dotenv";
+dotenv.config();
 
 export class S3Service {
   private s3Client: S3Client;

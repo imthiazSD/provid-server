@@ -33,10 +33,10 @@ router.post(
 );
 
 // Legacy manual update endpoint (keep for backward compatibility or internal use)
-router.put(
-  '/:exportId/status',
-  authMiddleware, // Or use a separate API key auth for internal services
-  exportController.updateExportStatus.bind(exportController)
-);
+// router.put(
+//   '/:exportId/status',
+//   authMiddleware, // Or use a separate API key auth for internal services
+//   exportController.updateExportStatus.bind(exportController)
+// );
 
 export default router;

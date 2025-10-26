@@ -8,7 +8,7 @@ import {
   useVideoConfig,
   Video,
   Img,
-  staticFile
+  staticFile,
 } from 'remotion';
 
 interface VideoCompositionProps {
@@ -31,7 +31,7 @@ interface VideoCompositionProps {
 
 export const VideoComposition: React.FC<VideoCompositionProps> = ({
   videoUrl,
-  compositionSettings
+  compositionSettings,
 }) => {
   const frame = useCurrentFrame();
   const { fps, durationInFrames, width, height } = useVideoConfig();
@@ -44,20 +44,20 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
     textColor = '#FFFFFF',
     logoUrl,
     audioUrl,
-    effects = {}
+    effects = {},
   } = compositionSettings;
 
   // Fade in effect (first 30 frames / 1 second)
   const fadeIn = effects.fadeIn
     ? interpolate(frame, [0, 30], [0, 1], {
-        extrapolateRight: 'clamp'
+        extrapolateRight: 'clamp',
       })
     : 1;
 
   // Fade out effect (last 30 frames / 1 second)
   const fadeOut = effects.fadeOut
     ? interpolate(frame, [durationInFrames - 30, durationInFrames], [1, 0], {
-        extrapolateLeft: 'clamp'
+        extrapolateLeft: 'clamp',
       })
     : 1;
 
@@ -66,7 +66,7 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
   // Zoom effect
   const scale = effects.zoom
     ? interpolate(frame, [0, durationInFrames], [1, 1.2], {
-        extrapolateRight: 'clamp'
+        extrapolateRight: 'clamp',
       })
     : 1;
 
@@ -76,7 +76,7 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
       <AbsoluteFill
         style={{
           opacity,
-          transform: `scale(${scale})`
+          transform: `scale(${scale})`,
         }}
       >
         <Video
@@ -84,7 +84,7 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
           style={{
             width: '100%',
             height: '100%',
-            objectFit: 'cover'
+            objectFit: 'cover',
           }}
         />
       </AbsoluteFill>
@@ -98,7 +98,7 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
           style={{
             justifyContent: 'flex-start',
             alignItems: 'flex-end',
-            padding: 40
+            padding: 40,
           }}
         >
           <Img
@@ -106,7 +106,7 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
             style={{
               width: 150,
               height: 'auto',
-              opacity: 0.8
+              opacity: 0.8,
             }}
           />
         </AbsoluteFill>
@@ -119,7 +119,7 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
             style={{
               justifyContent: 'center',
               alignItems: 'center',
-              backgroundColor: 'rgba(0, 0, 0, 0.5)'
+              backgroundColor: 'rgba(0, 0, 0, 0.5)',
             }}
           >
             <div
@@ -130,7 +130,7 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
                 textAlign: 'center',
                 padding: 40,
                 fontFamily: 'Arial, sans-serif',
-                opacity: interpolate(frame, [0, 15, 75, 90], [0, 1, 1, 0])
+                opacity: interpolate(frame, [0, 15, 75, 90], [0, 1, 1, 0]),
               }}
             >
               {title}
@@ -143,7 +143,7 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
                   textAlign: 'center',
                   marginTop: 20,
                   fontFamily: 'Arial, sans-serif',
-                  opacity: interpolate(frame, [15, 30, 75, 90], [0, 1, 1, 0])
+                  opacity: interpolate(frame, [15, 30, 75, 90], [0, 1, 1, 0]),
                 }}
               >
                 {subtitle}
@@ -159,7 +159,7 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
           style={{
             justifyContent: 'flex-end',
             alignItems: 'center',
-            padding: 60
+            padding: 60,
           }}
         >
           <div
@@ -169,7 +169,7 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
               backgroundColor: 'rgba(0, 0, 0, 0.7)',
               padding: '15px 30px',
               borderRadius: 10,
-              fontFamily: 'Arial, sans-serif'
+              fontFamily: 'Arial, sans-serif',
             }}
           >
             {overlayText}

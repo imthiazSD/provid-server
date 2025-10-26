@@ -25,16 +25,19 @@ export class ExportController {
       if (!project) {
         res.status(404).json({
           success: false,
-          message: 'Project not found'
+          message: 'Project not found',
         });
         return;
       }
 
-      // Check if video URL exists
-      if (!project.compositionSettings.videoUrl) {
+      // Check if video URL exists and is a valid string
+      if (
+        !project.compositionSettings.videoUrl ||
+        typeof project.compositionSettings.videoUrl !== 'string'
+      ) {
         res.status(400).json({
           success: false,
-          message: 'No video uploaded for this project'
+          message: 'Invalid or missing video URL for this project',
         });
         return;
       }
@@ -43,7 +46,7 @@ export class ExportController {
       const existingExport = await ExportRequest.findOne({
         projectId,
         userId,
-        status: { $in: ['pending', 'processing'] }
+        status: { $in: ['pending', 'processing'] },
       });
 
       if (existingExport) {
@@ -52,8 +55,8 @@ export class ExportController {
           message: 'Export already in progress for this project',
           data: {
             exportId: existingExport._id,
-            status: existingExport.status
-          }
+            status: existingExport.status,
+          },
         });
         return;
       }
@@ -62,7 +65,7 @@ export class ExportController {
       const exportRequest = new ExportRequest({
         projectId,
         userId,
-        status: 'pending'
+        status: 'pending',
       });
 
       await exportRequest.save();
@@ -70,26 +73,40 @@ export class ExportController {
       // Prepare webhook URL for status updates
       const webhookUrl = `${process.env.API_BASE_URL}/api/exports/webhook`;
 
+      // Convert compositionSettings to plain object and structure inputProps
+      const { videoUrl, ...otherSettings } = project.compositionSettings.toObject
+        ? project.compositionSettings.toObject() // Use toObject if available
+        : project.compositionSettings; // Fallback for non-Mongoose objects
+
+      const inputProps = {
+        videoUrl,
+        compositionSettings: {
+          ...otherSettings,
+          projectId: project._id.toString(),
+        },
+      };
+
+      // Log inputProps for debugging
+      logger.info('Constructed inputProps:', JSON.stringify(inputProps, null, 2));
+
       // Enqueue render request to SQS
-      // The Lambda function will pick this message and call renderMediaOnLambda
       const messageId = await this.remotionSQSService.enqueueRenderRequest({
         exportId: exportRequest._id.toString(),
         projectId: project._id.toString(),
         userId: userId,
         compositionId: compositionId || 'MainComposition',
-        inputProps: {
-          ...project.compositionSettings,
-          projectId: project._id.toString()
-        },
+        inputProps,
         codec: codec || 'h264',
-        webhookUrl: webhookUrl
+        webhookUrl,
       });
 
       // Update export request with queue message ID
       exportRequest.queueMessageId = messageId;
       await exportRequest.save();
 
-      logger.info(`Export request queued: ${exportRequest._id} for project: ${projectId}, messageId: ${messageId}`);
+      logger.info(
+        `Export request queued: ${exportRequest._id} for project: ${projectId}, messageId: ${messageId}`
+      );
 
       res.json({
         success: true,
@@ -98,8 +115,8 @@ export class ExportController {
           exportId: exportRequest._id,
           queueMessageId: messageId,
           status: exportRequest.status,
-          estimatedTime: '2-5 minutes'
-        }
+          estimatedTime: '2-5 minutes',
+        },
       });
     } catch (error) {
       logger.error('Export video error:', error);
@@ -112,20 +129,26 @@ export class ExportController {
       const userId = (req as any).userId;
       const { exportId } = req.params;
 
-      const exportRequest = await ExportRequest.findOne({ _id: exportId, userId })
-        .populate('projectId', 'title');
+      const exportRequest = await ExportRequest.findOne({
+        _id: exportId,
+        userId,
+      }).populate('projectId', 'title');
 
       if (!exportRequest) {
         res.status(404).json({
           success: false,
-          message: 'Export request not found'
+          message: 'Export request not found',
         });
         return;
       }
 
       // If still processing and we have renderId, get live progress from Remotion
       let progress = null;
-      if (exportRequest.status === 'processing' && exportRequest.renderId && exportRequest.bucketName) {
+      if (
+        exportRequest.status === 'processing' &&
+        exportRequest.renderId &&
+        exportRequest.bucketName
+      ) {
         try {
           progress = await this.remotionSQSService.getRenderProgress(
             exportRequest.renderId,
@@ -144,13 +167,15 @@ export class ExportController {
           status: exportRequest.status,
           outputUrl: exportRequest.outputUrl,
           errorMessage: exportRequest.errorMessage,
-          progress: progress ? {
-            overallProgress: progress.overallProgress,
-            done: progress.done
-          } : null,
+          progress: progress
+            ? {
+                overallProgress: progress.overallProgress,
+                done: progress.done,
+              }
+            : null,
           createdAt: exportRequest.createdAt,
-          updatedAt: exportRequest.updatedAt
-        }
+          updatedAt: exportRequest.updatedAt,
+        },
       });
     } catch (error) {
       logger.error('Get export status error:', error);
@@ -183,14 +208,14 @@ export class ExportController {
             outputUrl: exp.outputUrl,
             errorMessage: exp.errorMessage,
             createdAt: exp.createdAt,
-            updatedAt: exp.updatedAt
+            updatedAt: exp.updatedAt,
           })),
           pagination: {
             current: page,
             pages: Math.ceil(total / limit),
-            total
-          }
-        }
+            total,
+          },
+        },
       });
     } catch (error) {
       logger.error('Get export history error:', error);
@@ -204,14 +229,7 @@ export class ExportController {
    */
   public async handleWebhook(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { 
-        type, 
-        exportId, 
-        renderId, 
-        bucketName, 
-        outputFile, 
-        errors 
-      } = req.body;
+      const { type, exportId, renderId, bucketName, outputFile, errors } = req.body;
 
       // Verify webhook signature if configured
       const signature = req.headers['x-remotion-signature'];

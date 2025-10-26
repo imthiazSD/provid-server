@@ -93,3 +93,5 @@ jspm_packages/
 
 # TernJS port file
 .tern-port
+
+lambda/render-function/function.zip

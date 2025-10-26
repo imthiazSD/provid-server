@@ -20,6 +20,7 @@ services:
       - REMOTION_LAMBDA_FUNCTION_NAME=${REMOTION_LAMBDA_FUNCTION_NAME}
       - REMOTION_SERVE_URL=${REMOTION_SERVE_URL}
       - WEBHOOK_SECRET=${WEBHOOK_SECRET}
+      - API_BASE_URL=${API_BASE_URL}
     depends_on:
       - mongo
       - redis

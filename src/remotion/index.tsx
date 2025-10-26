@@ -15,7 +15,7 @@ export const RemotionRoot: React.FC = () => {
         height={1080}
         defaultProps={{
           videoUrl: '',
-          compositionSettings: {}
+          compositionSettings: {},
         }}
       />
     </>

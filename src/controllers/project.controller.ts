@@ -1,13 +1,11 @@
-import { Request, Response, NextFunction } from "express";
-import { Project } from "../models/project.model";
-import { logger } from "../utils/logger";
+import { Request, Response, NextFunction } from 'express';
+import { Project } from '../models/project.model';
+import { logger } from '../utils/logger';
+import { S3Service } from '../services/s3.service';
 
 export class ProjectController {
-  public async getProjects(
-    req: Request,
-    res: Response,
-    next: NextFunction
-  ): Promise<void> {
+  private s3 = new S3Service();
+  public async getProjects(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const userId = (req as any).userId;
       const page = parseInt(req.query.page as string) || 1;
@@ -15,7 +13,7 @@ export class ProjectController {
       const skip = (page - 1) * limit;
 
       const projects = await Project.find({ userId })
-        .select("title thumbnailUrl previewUrl createdAt updatedAt")
+        .select('title thumbnailUrl previewUrl createdAt updatedAt')
         .sort({ updatedAt: -1 })
         .skip(skip)
         .limit(limit);
@@ -25,7 +23,7 @@ export class ProjectController {
       res.json({
         success: true,
         data: {
-          projects: projects.map((project) => ({
+          projects: projects.map(project => ({
             id: project._id,
             title: project.title,
             thumbnailUrl: project.thumbnailUrl,
@@ -42,16 +40,12 @@ export class ProjectController {
         },
       });
     } catch (error) {
-      logger.error("Get projects error:", error);
+      logger.error('Get projects error:', error);
       next(error);
     }
   }
 
-  public async createProject(
-    req: Request,
-    res: Response,
-    next: NextFunction
-  ): Promise<void> {
+  public async createProject(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const userId = (req as any).userId;
       const { title } = req.body;
@@ -61,7 +55,7 @@ export class ProjectController {
         title,
         userId,
         compositionSettings: {
-          videoUrl: "", // Empty string for new projects
+          videoUrl: '', // Empty string for new projects
           layers: [],
           fps: 30,
           width: 1920,
@@ -75,7 +69,7 @@ export class ProjectController {
 
       res.status(201).json({
         success: true,
-        message: "Project created successfully",
+        message: 'Project created successfully',
         data: {
           project: {
             id: project._id,
@@ -86,16 +80,12 @@ export class ProjectController {
         },
       });
     } catch (error) {
-      logger.error("Create project error:", error);
+      logger.error('Create project error:', error);
       next(error);
     }
   }
 
-  public async getProject(
-    req: Request,
-    res: Response,
-    next: NextFunction
-  ): Promise<void> {
+  public async getProject(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const userId = (req as any).userId;
       const { projectId } = req.params;
@@ -105,7 +95,7 @@ export class ProjectController {
       if (!project) {
         res.status(404).json({
           success: false,
-          message: "Project not found",
+          message: 'Project not found',
         });
         return;
       }
@@ -125,16 +115,12 @@ export class ProjectController {
         },
       });
     } catch (error) {
-      logger.error("Get project error:", error);
+      logger.error('Get project error:', error);
       next(error);
     }
   }
 
-  public async updateProject(
-    req: Request,
-    res: Response,
-    next: NextFunction
-  ): Promise<void> {
+  public async updateProject(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const userId = (req as any).userId;
       const { projectId } = req.params;
@@ -149,7 +135,7 @@ export class ProjectController {
       if (!project) {
         res.status(404).json({
           success: false,
-          message: "Project not found",
+          message: 'Project not found',
         });
         return;
       }
@@ -158,7 +144,7 @@ export class ProjectController {
 
       res.json({
         success: true,
-        message: "Project updated successfully",
+        message: 'Project updated successfully',
         data: {
           project: {
             id: project._id,
@@ -169,16 +155,12 @@ export class ProjectController {
         },
       });
     } catch (error) {
-      logger.error("Update project error:", error);
+      logger.error('Update project error:', error);
       next(error);
     }
   }
 
-  public async autosave(
-    req: Request,
-    res: Response,
-    next: NextFunction
-  ): Promise<void> {
+  public async autosave(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const userId = (req as any).userId;
       const { projectId } = req.params;
@@ -188,7 +170,7 @@ export class ProjectController {
       if (!compositionSettings) {
         res.status(400).json({
           success: false,
-          message: "compositionSettings is required",
+          message: 'compositionSettings is required',
         });
         return;
       }
@@ -205,54 +187,80 @@ export class ProjectController {
       if (!project) {
         res.status(404).json({
           success: false,
-          message: "Project not found",
+          message: 'Project not found',
         });
         return;
       }
 
       res.json({
         success: true,
-        message: "Project autosaved",
+        message: 'Project autosaved',
         data: {
           updatedAt: project.updatedAt,
         },
       });
     } catch (error) {
-      logger.error("Autosave error:", error);
+      logger.error('Autosave error:', error);
       next(error);
     }
   }
 
-  public async deleteProject(
-    req: Request,
-    res: Response,
-    next: NextFunction
-  ): Promise<void> {
+  public async deleteProject(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const userId = (req as any).userId;
       const { projectId } = req.params;
 
-      const project = await Project.findOneAndDelete({
-        _id: projectId,
-        userId,
-      });
+      // -------------------------------------------------
+      // 1. Load the project (we need thumbnail/preview URLs)
+      // -------------------------------------------------
+      const project = await Project.findOne({ _id: projectId, userId })
+        .select('thumbnailUrl previewUrl')
+        .lean();
 
       if (!project) {
-        res.status(404).json({
+        return res.status(404).json({
           success: false,
-          message: "Project not found",
+          message: 'Project not found',
         });
-        return;
       }
 
-      logger.info(`Project deleted: ${projectId} by user: ${userId}`);
+      // -------------------------------------------------
+      // 2. Delete **everything** under the project folder
+      // -------------------------------------------------
+      const prefix = `videos/${userId}/${projectId}/`;
+      await this.s3.deleteByPrefix(prefix);
+
+      // -------------------------------------------------
+      // 3. (Optional) Explicitly delete thumbnail/preview
+      //     if they live *outside* the folder – safe double-delete
+      // -------------------------------------------------
+      const extraDeletes: string[] = [];
+
+      if (project.thumbnailUrl) {
+        const key = this.s3.extractKeyFromUrl(project.thumbnailUrl);
+        if (!key.startsWith(prefix)) extraDeletes.push(key);
+      }
+      if (project.previewUrl) {
+        const key = this.s3.extractKeyFromUrl(project.previewUrl);
+        if (!key.startsWith(prefix)) extraDeletes.push(key);
+      }
+
+      // Delete any stray URLs in parallel
+      await Promise.all(extraDeletes.map(k => this.s3.deleteFile(k).catch(() => {})));
+
+      // -------------------------------------------------
+      // 4. Remove the DB record
+      // -------------------------------------------------
+      await Project.deleteOne({ _id: projectId, userId });
+
+      logger.info(`Project fully deleted – DB + S3 (prefix: ${prefix}) – user: ${userId}`);
 
       res.json({
         success: true,
-        message: "Project deleted successfully",
+        message: 'Project and all associated files deleted successfully',
       });
     } catch (error) {
-      logger.error("Delete project error:", error);
+      logger.error('Delete project error:', error);
       next(error);
     }
   }

@@ -8,6 +8,8 @@ import {
   UploadPartCommand,
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
+  ListObjectsV2Command,
+  DeleteObjectsCommand,
 } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -226,34 +228,6 @@ export class S3Service {
   }
 
   /**
-   * Extract S3 key from URL
-   */
-  private extractKeyFromUrl(url: string): string {
-    try {
-      const urlObj = new URL(url);
-
-      // Handle standard S3 URL
-      if (urlObj.hostname.includes('.s3.')) {
-        const pathname = decodeURIComponent(urlObj.pathname.substring(1));
-        return pathname;
-      }
-
-      // Handle s3:// format
-      if (urlObj.protocol === 's3:') {
-        return decodeURIComponent(urlObj.pathname.substring(1));
-      }
-
-      // Handle signed URLs
-      const pathname = decodeURIComponent(urlObj.pathname.substring(1));
-      // Remove query parameters if present
-      return pathname.split('?')[0];
-    } catch (error) {
-      logger.error(`Error extracting key from URL: ${url}`, error);
-      throw new Error('Invalid S3 URL format');
-    }
-  }
-
-  /**
    * Check if file exists in S3
    */
   async fileExists(key: string): Promise<boolean> {
@@ -300,6 +274,66 @@ export class S3Service {
       throw new Error(
         `Failed to get file metadata: ${error instanceof Error ? error.message : 'Unknown error'}`
       );
+    }
+  }
+
+  /**
+   * Delete **all** objects that start with a given prefix.
+   * Uses pagination + batch delete (max 1000 keys per request).
+   */
+  public async deleteByPrefix(prefix: string): Promise<void> {
+    let continuationToken: string | undefined;
+
+    do {
+      const list = await this.s3Client.send(
+        new ListObjectsV2Command({
+          Bucket: this.bucketName,
+          Prefix: prefix,
+          ContinuationToken: continuationToken,
+        })
+      );
+
+      const keys = (list.Contents ?? []).map(o => ({ Key: o.Key! }));
+      if (keys.length === 0) break;
+
+      // Delete in batches of 1000
+      for (let i = 0; i < keys.length; i += 1000) {
+        const batch = keys.slice(i, i + 1000);
+        await this.s3Client.send(
+          new DeleteObjectsCommand({
+            Bucket: this.bucketName,
+            Delete: { Objects: batch, Quiet: true },
+          })
+        );
+      }
+
+      continuationToken = list.NextContinuationToken;
+    } while (continuationToken);
+
+    logger.info(`Deleted all objects under S3 prefix: ${prefix}`);
+  }
+
+  /**
+   * Extract key from a full URL (public, signed, or virtual-hosted).
+   * Returns the raw key **without** leading slash.
+   */
+  public extractKeyFromUrl(url: string): string {
+    try {
+      const u = new URL(url);
+      // Standard virtual-hosted: https://bucket.s3.region.amazonaws.com/key...
+      if (u.hostname.includes('.s3.')) {
+        return decodeURIComponent(u.pathname.slice(1));
+      }
+      // Path-style (rare): https://s3.region.amazonaws.com/bucket/key...
+      if (u.hostname === `s3.${this.region}.amazonaws.com`) {
+        const parts = u.pathname.split('/').filter(Boolean);
+        if (parts[0] === this.bucketName) parts.shift();
+        return decodeURIComponent(parts.join('/'));
+      }
+      // Fallback – just strip query string
+      return decodeURIComponent(u.pathname.slice(1).split('?')[0]);
+    } catch (e) {
+      throw new Error(`Invalid S3 URL: ${url}`);
     }
   }
 

@@ -14,17 +14,17 @@ export const HTTP_STATUS = {
 
 export const FILE_TYPES = {
   VIDEO: [
-    "video/mp4",
-    "video/quicktime", // MOV
-    "video/x-msvideo", // AVI
-    "video/x-matroska", // MKV
-    "video/webm",
-    "video/avi",
-    "video/mov",
-    "video/wmv",
-    "application/octet-stream", // sometimes sent by fetch/postman
+    'video/mp4',
+    'video/quicktime', // MOV
+    'video/x-msvideo', // AVI
+    'video/x-matroska', // MKV
+    'video/webm',
+    'video/avi',
+    'video/mov',
+    'video/wmv',
+    'application/octet-stream', // sometimes sent by fetch/postman
   ],
-  IMAGE: ["image/jpeg", "image/png", "image/gif", "image/webp"],
+  IMAGE: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
 };
 
 export const MAX_FILE_SIZE = {
@@ -33,14 +33,16 @@ export const MAX_FILE_SIZE = {
 };
 
 export const EXPORT_STATUS = {
-  PENDING: "pending",
-  PROCESSING: "processing",
-  COMPLETED: "completed",
-  FAILED: "failed",
+  PENDING: 'pending',
+  PROCESSING: 'processing',
+  COMPLETED: 'completed',
+  FAILED: 'failed',
 };
 
 export const LAYER_TYPES = {
-  HIGHLIGHT: "highlight",
-  ZOOM: "zoom",
-  BLUR: "blur",
+  HIGHLIGHT: 'highlight',
+  ZOOM: 'zoom',
+  BLUR: 'blur',
 };
+
+export const WEBHOOK_URL = `${process.env.API_BASE_URL}/api/exports/webhook`;

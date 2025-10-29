@@ -4,6 +4,7 @@ import { Project } from '../models/project.model';
 import { NotificationService } from '../services/notification.service';
 import { RemotionSQSService } from '../services/remotion-sqs.service';
 import { logger } from '../utils/logger';
+import { WEBHOOK_URL } from '../utils/constants';
 
 export class ExportController {
   private remotionSQSService: RemotionSQSService;
@@ -71,7 +72,7 @@ export class ExportController {
       await exportRequest.save();
 
       // Prepare webhook URL for status updates
-      const webhookUrl = `${process.env.API_BASE_URL}/api/exports/webhook`;
+      const webhookUrl = WEBHOOK_URL;
 
       // Convert compositionSettings to plain object and structure inputProps
       const { videoUrl, ...otherSettings } = project.compositionSettings.toObject

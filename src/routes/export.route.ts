@@ -19,11 +19,7 @@ router.get(
   exportController.getExportStatus.bind(exportController)
 );
 
-router.get(
-  '/history',
-  authMiddleware,
-  exportController.getExportHistory.bind(exportController)
-);
+router.get('/history', authMiddleware, exportController.getExportHistory.bind(exportController));
 
 // Webhook endpoint (no auth, but signature validation)
 router.post(

@@ -1,10 +1,10 @@
-import { Request, Response, NextFunction } from "express";
-import { S3Service } from "../services/s3.service";
-import { Project } from "../models/project.model";
-import { logger } from "../utils/logger";
-import { v4 as uuidv4 } from "uuid";
-import path from "path";
-import { Readable } from "stream";
+import { Request, Response, NextFunction } from 'express';
+import { S3Service } from '../services/s3.service';
+import { Project } from '../models/project.model';
+import { logger } from '../utils/logger';
+import { v4 as uuidv4 } from 'uuid';
+import path from 'path';
+import { Readable } from 'stream';
 
 export class UploadController {
   private s3Service: S3Service;
@@ -27,7 +27,7 @@ export class UploadController {
    * Sanitize filename to remove special characters
    */
   private sanitizeFileName(fileName: string): string {
-    return fileName.replace(/[^a-zA-Z0-9.-]/g, "_");
+    return fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
   }
 
   /**
@@ -37,11 +37,133 @@ export class UploadController {
     return (bytes / (1024 * 1024)).toFixed(2);
   }
 
-  public async uploadVideo(
+  // controllers/videoUploadController.ts
+
+  public async generatePresignedUrl(
     req: Request,
     res: Response,
     next: NextFunction
   ): Promise<void> {
+    const startTime = Date.now();
+    try {
+      const userId = (req as any).userId;
+      const { projectId } = req.params;
+      const { fileName, fileType, fileSize } = req.body;
+
+      logger.info(
+        `Presigned URL request - ProjectId: ${projectId}, UserId: ${userId}, File: ${fileName}`
+      );
+
+      // Validate inputs
+      if (!fileName || !fileType || !fileSize) {
+        res
+          .status(400)
+          .json({ success: false, message: 'fileName, fileType, and fileSize are required' });
+        return;
+      }
+
+      // Validate file type
+      const allowedVideoTypes = [
+        'video/mp4',
+        'video/mpeg',
+        'video/quicktime',
+        'video/x-msvideo',
+        'video/webm',
+        'video/x-matroska',
+      ];
+
+      if (!allowedVideoTypes.includes(fileType)) {
+        res.status(400).json({
+          success: false,
+          message: `Invalid file type: ${fileType}. Allowed: ${allowedVideoTypes.join(', ')}`,
+        });
+        return;
+      }
+
+      // Max size: 500MB
+      const maxSize = 500 * 1024 * 1024;
+      if (fileSize > maxSize) {
+        res.status(400).json({
+          success: false,
+          message: `File too large. Max: 500MB`,
+        });
+        return;
+      }
+
+      // Verify project ownership
+      const project = await Project.findOne({ _id: projectId, userId });
+      if (!project) {
+        logger.warn(`Project not found - ProjectId: ${projectId}, UserId: ${userId}`);
+        res.status(404).json({ success: false, message: 'Project not found or access denied' });
+        return;
+      }
+
+      // Generate unique filename
+      const uniqueFileName = this.generateUniqueFileName(fileName);
+      const s3Key = `videos/${userId}/${projectId}/${uniqueFileName}`;
+
+      // Generate presigned URL (valid for 15 minutes)
+      const presignedUrl = await this.s3Service.generatePresignedUrl(
+        s3Key,
+        fileType,
+        fileSize,
+        15 * 60 // 15 minutes
+      );
+
+      const videoUrl = `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${s3Key}`;
+
+      const totalTime = ((Date.now() - startTime) / 1000).toFixed(2);
+      logger.info(`Presigned URL generated - ProjectId: ${projectId}, Time: ${totalTime}s`);
+
+      res.json({
+        success: true,
+        data: {
+          presignedUrl,
+          videoUrl,
+          s3Key,
+          fileName: uniqueFileName,
+        },
+      });
+    } catch (error: any) {
+      logger.error('Presigned URL generation failed:', error);
+      next(error);
+    }
+  }
+
+  public async completeVideoUpload(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const userId = (req as any).userId;
+      const { projectId } = req.params;
+      const { videoUrl } = req.body;
+
+      const project = await Project.findOne({ _id: projectId, userId });
+      if (!project) {
+        res.status(404).json({ success: false, message: 'Project not found' });
+        return;
+      }
+
+      // Delete old video (fire and forget)
+      if (project.compositionSettings?.videoUrl) {
+        this.s3Service.deleteFileFromUrl(project.compositionSettings.videoUrl).catch(() => {});
+      }
+
+      // Update project
+      await Project.findByIdAndUpdate(projectId, {
+        'compositionSettings.videoUrl': videoUrl,
+        updatedAt: new Date(),
+      });
+
+      res.json({
+        success: true,
+        message: 'Video linked to project',
+        data: { videoUrl },
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+
+  public async uploadVideo(req: Request, res: Response, next: NextFunction): Promise<void> {
     const startTime = Date.now();
 
     try {
@@ -49,14 +171,12 @@ export class UploadController {
       const { projectId } = req.params;
       const file = req.file;
 
-      logger.info(
-        `Upload request received - ProjectId: ${projectId}, UserId: ${userId}`
-      );
+      logger.info(`Upload request received - ProjectId: ${projectId}, UserId: ${userId}`);
 
       if (!file) {
         res.status(400).json({
           success: false,
-          message: "No file uploaded",
+          message: 'No file uploaded',
         });
         return;
       }
@@ -69,12 +189,12 @@ export class UploadController {
 
       // Validate file type
       const allowedVideoTypes = [
-        "video/mp4",
-        "video/mpeg",
-        "video/quicktime",
-        "video/x-msvideo",
-        "video/webm",
-        "video/x-matroska", // .mkv
+        'video/mp4',
+        'video/mpeg',
+        'video/quicktime',
+        'video/x-msvideo',
+        'video/webm',
+        'video/x-matroska', // .mkv
       ];
 
       if (!allowedVideoTypes.includes(file.mimetype)) {
@@ -82,7 +202,7 @@ export class UploadController {
           success: false,
           message: `Invalid file type: ${
             file.mimetype
-          }. Allowed types: ${allowedVideoTypes.join(", ")}`,
+          }. Allowed types: ${allowedVideoTypes.join(', ')}`,
         });
         return;
       }
@@ -92,9 +212,7 @@ export class UploadController {
       if (file.size > maxSize) {
         res.status(400).json({
           success: false,
-          message: `File too large. Maximum size is ${this.getFileSizeMB(
-            maxSize
-          )}MB`,
+          message: `File too large. Maximum size is ${this.getFileSizeMB(maxSize)}MB`,
         });
         return;
       }
@@ -109,7 +227,7 @@ export class UploadController {
         );
         res.status(404).json({
           success: false,
-          message: "Project not found or access denied",
+          message: 'Project not found or access denied',
         });
         return;
       }
@@ -118,11 +236,7 @@ export class UploadController {
       const uniqueFileName = this.generateUniqueFileName(file.originalname);
       const s3Key = `videos/${userId}/${projectId}/${uniqueFileName}`;
 
-      logger.info(
-        `Starting S3 upload - Key: ${s3Key}, Size: ${this.getFileSizeMB(
-          file.size
-        )}MB`
-      );
+      logger.info(`Starting S3 upload - Key: ${s3Key}, Size: ${this.getFileSizeMB(file.size)}MB`);
 
       // Upload to S3 with streaming for better performance
       const videoUrl = await this.s3Service.uploadFileStream(
@@ -130,7 +244,7 @@ export class UploadController {
         s3Key,
         file.mimetype,
         true, // Make file publicly accessible
-        (progress) => {
+        progress => {
           // Log progress every 10%
           if (progress % 10 === 0) {
             logger.info(`Upload progress for ${projectId}: ${progress}%`);
@@ -139,28 +253,20 @@ export class UploadController {
       );
 
       const uploadTime = ((Date.now() - startTime) / 1000).toFixed(2);
-      logger.info(
-        `S3 upload completed - URL: ${videoUrl}, Time: ${uploadTime}s`
-      );
+      logger.info(`S3 upload completed - URL: ${videoUrl}, Time: ${uploadTime}s`);
 
       // Delete old video if exists (async, don't wait)
       if (project.compositionSettings?.videoUrl) {
         this.s3Service
           .deleteFileFromUrl(project.compositionSettings.videoUrl)
-          .then(() =>
-            logger.info(`Deleted old video for project: ${projectId}`)
-          )
-          .catch((error) =>
-            logger.warn(`Failed to delete old video: ${error.message}`)
-          );
+          .then(() => logger.info(`Deleted old video for project: ${projectId}`))
+          .catch(error => logger.warn(`Failed to delete old video: ${error.message}`));
       }
 
       // Update project with video URL
-      logger.info(
-        `Updating project with new video URL - ProjectId: ${projectId}`
-      );
+      logger.info(`Updating project with new video URL - ProjectId: ${projectId}`);
       await Project.findByIdAndUpdate(projectId, {
-        "compositionSettings.videoUrl": videoUrl,
+        'compositionSettings.videoUrl': videoUrl,
         updatedAt: new Date(),
       });
 
@@ -171,7 +277,7 @@ export class UploadController {
 
       res.json({
         success: true,
-        message: "Video uploaded successfully",
+        message: 'Video uploaded successfully',
         data: {
           videoUrl,
           fileName: uniqueFileName,
@@ -193,11 +299,7 @@ export class UploadController {
     }
   }
 
-  public async uploadThumbnail(
-    req: Request,
-    res: Response,
-    next: NextFunction
-  ): Promise<void> {
+  public async uploadThumbnail(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const userId = (req as any).userId;
       const { projectId } = req.params;
@@ -206,24 +308,18 @@ export class UploadController {
       if (!file) {
         res.status(400).json({
           success: false,
-          message: "No file uploaded",
+          message: 'No file uploaded',
         });
         return;
       }
 
       // Validate file type
-      const allowedImageTypes = [
-        "image/jpeg",
-        "image/jpg",
-        "image/png",
-        "image/webp",
-        "image/gif",
-      ];
+      const allowedImageTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
 
       if (!allowedImageTypes.includes(file.mimetype)) {
         res.status(400).json({
           success: false,
-          message: "Invalid file type. Only image files are allowed.",
+          message: 'Invalid file type. Only image files are allowed.',
         });
         return;
       }
@@ -233,9 +329,7 @@ export class UploadController {
       if (file.size > maxSize) {
         res.status(400).json({
           success: false,
-          message: `File too large. Maximum size is ${this.getFileSizeMB(
-            maxSize
-          )}MB`,
+          message: `File too large. Maximum size is ${this.getFileSizeMB(maxSize)}MB`,
         });
         return;
       }
@@ -245,7 +339,7 @@ export class UploadController {
       if (!project) {
         res.status(404).json({
           success: false,
-          message: "Project not found",
+          message: 'Project not found',
         });
         return;
       }
@@ -268,12 +362,8 @@ export class UploadController {
       if (project.thumbnailUrl) {
         this.s3Service
           .deleteFileFromUrl(project.thumbnailUrl)
-          .then(() =>
-            logger.info(`Deleted old thumbnail for project: ${projectId}`)
-          )
-          .catch((error) =>
-            logger.warn(`Failed to delete old thumbnail: ${error.message}`)
-          );
+          .then(() => logger.info(`Deleted old thumbnail for project: ${projectId}`))
+          .catch(error => logger.warn(`Failed to delete old thumbnail: ${error.message}`));
       }
 
       // Update project with thumbnail URL
@@ -286,7 +376,7 @@ export class UploadController {
 
       res.json({
         success: true,
-        message: "Thumbnail uploaded successfully",
+        message: 'Thumbnail uploaded successfully',
         data: {
           thumbnailUrl,
           fileName: uniqueFileName,
@@ -296,7 +386,7 @@ export class UploadController {
         },
       });
     } catch (error) {
-      logger.error("Thumbnail upload error:", error);
+      logger.error('Thumbnail upload error:', error);
       next(error);
     }
   }
@@ -304,11 +394,7 @@ export class UploadController {
   /**
    * Delete uploaded video
    */
-  public async deleteVideo(
-    req: Request,
-    res: Response,
-    next: NextFunction
-  ): Promise<void> {
+  public async deleteVideo(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const userId = (req as any).userId;
       const { projectId } = req.params;
@@ -318,7 +404,7 @@ export class UploadController {
       if (!project) {
         res.status(404).json({
           success: false,
-          message: "Project not found",
+          message: 'Project not found',
         });
         return;
       }
@@ -326,19 +412,17 @@ export class UploadController {
       if (!project.compositionSettings?.videoUrl) {
         res.status(404).json({
           success: false,
-          message: "No video found for this project",
+          message: 'No video found for this project',
         });
         return;
       }
 
       // Delete from S3
-      await this.s3Service.deleteFileFromUrl(
-        project.compositionSettings.videoUrl
-      );
+      await this.s3Service.deleteFileFromUrl(project.compositionSettings.videoUrl);
 
       // Remove video URL from project
       await Project.findByIdAndUpdate(projectId, {
-        "compositionSettings.videoUrl": null,
+        'compositionSettings.videoUrl': null,
         updatedAt: new Date(),
       });
 
@@ -346,10 +430,10 @@ export class UploadController {
 
       res.json({
         success: true,
-        message: "Video deleted successfully",
+        message: 'Video deleted successfully',
       });
     } catch (error) {
-      logger.error("Video deletion error:", error);
+      logger.error('Video deletion error:', error);
       next(error);
     }
   }
@@ -363,7 +447,7 @@ export class UploadController {
 
       res.json({
         success: true,
-        message: "Upload service is healthy",
+        message: 'Upload service is healthy',
         data: {
           s3Connected: isS3Connected,
           timestamp: new Date().toISOString(),
@@ -372,7 +456,7 @@ export class UploadController {
     } catch (error: any) {
       res.status(503).json({
         success: false,
-        message: "Upload service is unhealthy",
+        message: 'Upload service is unhealthy',
         error: error.message,
       });
     }

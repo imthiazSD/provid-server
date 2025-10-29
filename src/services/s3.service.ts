@@ -8,11 +8,11 @@ import {
   UploadPartCommand,
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
-} from "@aws-sdk/client-s3";
-import { Upload } from "@aws-sdk/lib-storage";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { logger } from "../utils/logger";
-import dotenv from "dotenv";
+} from '@aws-sdk/client-s3';
+import { Upload } from '@aws-sdk/lib-storage';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { logger } from '../utils/logger';
+import dotenv from 'dotenv';
 dotenv.config();
 
 export class S3Service {
@@ -21,15 +21,15 @@ export class S3Service {
   private region: string;
 
   constructor() {
-    this.region = process.env.AWS_REGION || "us-east-1";
-    this.bucketName = process.env.AWS_S3_BUCKET_NAME || "";
+    this.region = process.env.AWS_REGION || 'us-east-1';
+    this.bucketName = process.env.AWS_S3_BUCKET_NAME || '';
 
     if (!this.bucketName) {
-      throw new Error("AWS_S3_BUCKET_NAME environment variable is required");
+      throw new Error('AWS_S3_BUCKET_NAME environment variable is required');
     }
 
     if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
-      throw new Error("AWS credentials are required");
+      throw new Error('AWS credentials are required');
     }
 
     this.s3Client = new S3Client({
@@ -45,9 +45,23 @@ export class S3Service {
       },
     });
 
-    logger.info(
-      `S3Service initialized with bucket: ${this.bucketName}, region: ${this.region}`
-    );
+    logger.info(`S3Service initialized with bucket: ${this.bucketName}, region: ${this.region}`);
+  }
+
+  async generatePresignedUrl(
+    key: string,
+    contentType: string,
+    fileSize: number,
+    expiresIn: number
+  ): Promise<string> {
+    const command = new PutObjectCommand({
+      Bucket: this.bucketName,
+      Key: key,
+      ContentType: contentType,
+      ContentLength: fileSize,
+    });
+
+    return await getSignedUrl(this.s3Client, command, { expiresIn });
   }
 
   /**
@@ -80,9 +94,7 @@ export class S3Service {
     } catch (error) {
       logger.error(`Error uploading file to S3: ${key}`, error);
       throw new Error(
-        `Failed to upload file: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }`
+        `Failed to upload file: ${error instanceof Error ? error.message : 'Unknown error'}`
       );
     }
   }
@@ -100,11 +112,9 @@ export class S3Service {
   ): Promise<string> {
     try {
       logger.info(
-        `Starting streaming upload for: ${key}, size: ${(
-          fileBuffer.length /
-          1024 /
-          1024
-        ).toFixed(2)}MB`
+        `Starting streaming upload for: ${key}, size: ${(fileBuffer.length / 1024 / 1024).toFixed(
+          2
+        )}MB`
       );
 
       const upload = new Upload({
@@ -122,11 +132,9 @@ export class S3Service {
 
       // Track upload progress
       if (onProgress) {
-        upload.on("httpUploadProgress", (progress) => {
+        upload.on('httpUploadProgress', progress => {
           if (progress.loaded && progress.total) {
-            const percentage = Math.round(
-              (progress.loaded / progress.total) * 100
-            );
+            const percentage = Math.round((progress.loaded / progress.total) * 100);
             onProgress(percentage);
           }
         });
@@ -144,9 +152,7 @@ export class S3Service {
     } catch (error) {
       logger.error(`Error in streaming upload: ${key}`, error);
       throw new Error(
-        `Failed to upload file: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }`
+        `Failed to upload file: ${error instanceof Error ? error.message : 'Unknown error'}`
       );
     }
   }
@@ -157,7 +163,7 @@ export class S3Service {
   getPublicUrl(key: string): string {
     return `https://${this.bucketName}.s3.${
       this.region
-    }.amazonaws.com/${encodeURIComponent(key).replace(/%2F/g, "/")}`;
+    }.amazonaws.com/${encodeURIComponent(key).replace(/%2F/g, '/')}`;
   }
 
   /**
@@ -177,9 +183,7 @@ export class S3Service {
     } catch (error) {
       logger.error(`Error generating signed URL for: ${key}`, error);
       throw new Error(
-        `Failed to generate signed URL: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }`
+        `Failed to generate signed URL: ${error instanceof Error ? error.message : 'Unknown error'}`
       );
     }
   }
@@ -199,9 +203,7 @@ export class S3Service {
     } catch (error) {
       logger.error(`Error deleting file from S3: ${key}`, error);
       throw new Error(
-        `Failed to delete file: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }`
+        `Failed to delete file: ${error instanceof Error ? error.message : 'Unknown error'}`
       );
     }
   }
@@ -217,7 +219,7 @@ export class S3Service {
       logger.error(`Error deleting file from URL: ${url}`, error);
       throw new Error(
         `Failed to delete file from URL: ${
-          error instanceof Error ? error.message : "Unknown error"
+          error instanceof Error ? error.message : 'Unknown error'
         }`
       );
     }
@@ -231,23 +233,23 @@ export class S3Service {
       const urlObj = new URL(url);
 
       // Handle standard S3 URL
-      if (urlObj.hostname.includes(".s3.")) {
+      if (urlObj.hostname.includes('.s3.')) {
         const pathname = decodeURIComponent(urlObj.pathname.substring(1));
         return pathname;
       }
 
       // Handle s3:// format
-      if (urlObj.protocol === "s3:") {
+      if (urlObj.protocol === 's3:') {
         return decodeURIComponent(urlObj.pathname.substring(1));
       }
 
       // Handle signed URLs
       const pathname = decodeURIComponent(urlObj.pathname.substring(1));
       // Remove query parameters if present
-      return pathname.split("?")[0];
+      return pathname.split('?')[0];
     } catch (error) {
       logger.error(`Error extracting key from URL: ${url}`, error);
-      throw new Error("Invalid S3 URL format");
+      throw new Error('Invalid S3 URL format');
     }
   }
 
@@ -264,10 +266,7 @@ export class S3Service {
       await this.s3Client.send(command);
       return true;
     } catch (error: any) {
-      if (
-        error.name === "NotFound" ||
-        error.$metadata?.httpStatusCode === 404
-      ) {
+      if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404) {
         return false;
       }
       logger.error(`Error checking file existence: ${key}`, error);
@@ -293,15 +292,13 @@ export class S3Service {
 
       return {
         size: response.ContentLength || 0,
-        contentType: response.ContentType || "application/octet-stream",
+        contentType: response.ContentType || 'application/octet-stream',
         lastModified: response.LastModified || new Date(),
       };
     } catch (error) {
       logger.error(`Error getting file metadata: ${key}`, error);
       throw new Error(
-        `Failed to get file metadata: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }`
+        `Failed to get file metadata: ${error instanceof Error ? error.message : 'Unknown error'}`
       );
     }
   }
@@ -313,20 +310,17 @@ export class S3Service {
     try {
       const command = new HeadObjectCommand({
         Bucket: this.bucketName,
-        Key: "test-connection.txt", // This file doesn't need to exist
+        Key: 'test-connection.txt', // This file doesn't need to exist
       });
 
       await this.s3Client.send(command);
       return true;
     } catch (error: any) {
       // 404 is ok - means we can connect to bucket
-      if (
-        error.name === "NotFound" ||
-        error.$metadata?.httpStatusCode === 404
-      ) {
+      if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404) {
         return true;
       }
-      logger.error("S3 connection test failed:", error);
+      logger.error('S3 connection test failed:', error);
       return false;
     }
   }

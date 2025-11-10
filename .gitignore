@@ -95,3 +95,4 @@ jspm_packages/
 .tern-port
 
 lambda/render-function/function.zip
+build

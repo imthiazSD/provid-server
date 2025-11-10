@@ -1,21 +1,31 @@
 {
-  "name": "remotion-render-lambda",
+  "name": "remotion-render-worker",
   "version": "1.0.0",
-  "description": "Lambda function to process SQS messages and trigger Remotion renders",
-  "main": "index.js",
+  "description": "Remotion Lambda render worker with Step Functions",
+  "main": "dist/index.js",
   "scripts": {
-    "build": "tsc || true",
-    "package": "npm run build && cd dist && zip -r ../function.zip . -x \"*.map\" && cd .. && zip -r function.zip node_modules -x \"*.md\" \"*.txt\" \"test/*\" \"tests/*\" \"*.ts\" \"node_modules/@remotion/*/*.md\" \"node_modules/@remotion/*/test/*\"",
-    "deploy": "aws lambda update-function-code --function-name remotion-render-lambda --zip-file fileb://function.zip"
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "clean": "rm -rf dist",
+    "package": "npm run build && cd dist && zip -r ../function.zip . && cd .. && zip -r function.zip node_modules",
+    "test": "jest",
+    "lint": "eslint src --ext .ts"
   },
   "dependencies": {
-    "@remotion/lambda": "^4.0.365",
-    "aws-lambda": "^1.0.7",
+    "@remotion/lambda": "^4.0.0",
+    "@aws-sdk/client-sqs": "^3.400.0",
+    "@aws-sdk/client-sfn": "^3.400.0",
     "axios": "^1.6.0"
   },
   "devDependencies": {
-    "@types/aws-lambda": "^8.10.156",
-    "@types/node": "^20.0.0",
-    "typescript": "^5.0.0"
+    "@types/aws-lambda": "^8.10.130",
+    "@types/node": "^20.10.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "eslint": "^8.54.0",
+    "typescript": "^5.3.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

@@ -47,7 +47,7 @@ export class ExportController {
       const existingExport = await ExportRequest.findOne({
         projectId,
         userId,
-        status: { $in: ['pending', 'processing'] },
+        status: { $in: ['pending', 'queued', 'processing'] },
       });
 
       if (existingExport) {
@@ -57,6 +57,7 @@ export class ExportController {
           data: {
             exportId: existingExport._id,
             status: existingExport.status,
+            executionArn: existingExport.executionArn,
           },
         });
         return;
@@ -67,6 +68,7 @@ export class ExportController {
         projectId,
         userId,
         status: 'pending',
+        createdAt: new Date(),
       });
 
       await exportRequest.save();
@@ -76,8 +78,8 @@ export class ExportController {
 
       // Convert compositionSettings to plain object and structure inputProps
       const { videoUrl, ...otherSettings } = project.compositionSettings.toObject
-        ? project.compositionSettings.toObject() // Use toObject if available
-        : project.compositionSettings; // Fallback for non-Mongoose objects
+        ? project.compositionSettings.toObject()
+        : project.compositionSettings;
 
       const inputProps = {
         videoUrl,
@@ -90,7 +92,7 @@ export class ExportController {
       // Log inputProps for debugging
       logger.info('Constructed inputProps:', JSON.stringify(inputProps, null, 2));
 
-      // Enqueue render request to SQS
+      // Enqueue render request to SQS (will trigger Step Functions)
       const messageId = await this.remotionSQSService.enqueueRenderRequest({
         exportId: exportRequest._id.toString(),
         projectId: project._id.toString(),
@@ -111,12 +113,13 @@ export class ExportController {
 
       res.json({
         success: true,
-        message: 'Export request queued successfully',
+        message: 'Export request queued successfully. Step Functions will handle the render.',
         data: {
           exportId: exportRequest._id,
           queueMessageId: messageId,
           status: exportRequest.status,
           estimatedTime: '2-5 minutes',
+          note: 'Render will execute serially. Check status endpoint for updates.',
         },
       });
     } catch (error) {
@@ -143,43 +146,101 @@ export class ExportController {
         return;
       }
 
-      // If still processing and we have renderId, get live progress from Remotion
-      let progress = null;
-      if (
-        exportRequest.status === 'processing' &&
-        exportRequest.renderId &&
-        exportRequest.bucketName
-      ) {
-        try {
-          progress = await this.remotionSQSService.getRenderProgress(
-            exportRequest.renderId,
-            exportRequest.bucketName
-          );
-        } catch (error) {
-          logger.error('Failed to get render progress:', error);
-        }
+      // Build response with available data
+      const responseData: any = {
+        exportId: exportRequest._id,
+        projectId: exportRequest.projectId,
+        status: exportRequest.status,
+        outputUrl: exportRequest.outputUrl,
+        errorMessage: exportRequest.errorMessage,
+        executionArn: exportRequest.executionArn,
+        renderId: exportRequest.renderId,
+        bucketName: exportRequest.bucketName,
+        createdAt: exportRequest.createdAt,
+        updatedAt: exportRequest.updatedAt,
+      };
+
+      // If processing and we have progress data
+      if (exportRequest.progress !== undefined && exportRequest.progress !== null) {
+        responseData.progress = {
+          percent: exportRequest.progress,
+        };
       }
+
+      // Add helpful status descriptions
+      const statusDescriptions: Record<string, string> = {
+        pending: 'Export queued, waiting to start',
+        queued: 'Export in Step Functions queue',
+        processing: 'Render in progress',
+        completed: 'Render completed successfully',
+        failed: 'Render failed',
+      };
+
+      responseData.statusDescription = statusDescriptions[exportRequest.status] || 'Unknown status';
 
       res.json({
         success: true,
-        data: {
-          exportId: exportRequest._id,
-          projectId: exportRequest.projectId,
-          status: exportRequest.status,
-          outputUrl: exportRequest.outputUrl,
-          errorMessage: exportRequest.errorMessage,
-          progress: progress
-            ? {
-                overallProgress: progress.overallProgress,
-                done: progress.done,
-              }
-            : null,
-          createdAt: exportRequest.createdAt,
-          updatedAt: exportRequest.updatedAt,
-        },
+        data: responseData,
       });
     } catch (error) {
       logger.error('Get export status error:', error);
+      next(error);
+    }
+  }
+
+  /**
+   * Get Step Functions execution status
+   * Additional endpoint to check Step Functions execution
+   */
+  public async getExecutionStatus(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const userId = (req as any).userId;
+      const { exportId } = req.params;
+
+      const exportRequest = await ExportRequest.findOne({
+        _id: exportId,
+        userId,
+      });
+
+      if (!exportRequest) {
+        res.status(404).json({
+          success: false,
+          message: 'Export request not found',
+        });
+        return;
+      }
+
+      if (!exportRequest.executionArn) {
+        res.status(400).json({
+          success: false,
+          message: 'No Step Functions execution found for this export',
+        });
+        return;
+      }
+
+      // Get execution status from Step Functions
+      try {
+        const executionStatus = await this.remotionSQSService.getStepFunctionsExecutionStatus(
+          exportRequest.executionArn
+        );
+
+        res.json({
+          success: true,
+          data: {
+            exportId: exportRequest._id,
+            executionArn: exportRequest.executionArn,
+            executionStatus,
+          },
+        });
+      } catch (sfnError) {
+        logger.error('Failed to get Step Functions execution status:', sfnError);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to retrieve execution status from Step Functions',
+        });
+      }
+    } catch (error) {
+      logger.error('Get execution status error:', error);
       next(error);
     }
   }
@@ -208,6 +269,8 @@ export class ExportController {
             status: exp.status,
             outputUrl: exp.outputUrl,
             errorMessage: exp.errorMessage,
+            executionArn: exp.executionArn,
+            progress: exp.progress,
             createdAt: exp.createdAt,
             updatedAt: exp.updatedAt,
           })),
@@ -226,20 +289,31 @@ export class ExportController {
 
   /**
    * Webhook endpoint that receives updates from the Lambda render function
-   * The Lambda function calls this after renderMediaOnLambda completes/fails
+   * The Lambda function calls this after each action (started, completed, failed)
    */
   public async handleWebhook(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { type, exportId, renderId, bucketName, outputFile, errors } = req.body;
+      const { type, exportId, renderId, bucketName, outputFile, errors, projectId } = req.body;
 
       // Verify webhook signature if configured
       const signature = req.headers['x-remotion-signature'];
       if (process.env.WEBHOOK_SECRET && signature) {
-        // Implement signature verification logic here
+        const crypto = await import('crypto');
+        const expectedSignature = crypto
+          .createHmac('sha256', process.env.WEBHOOK_SECRET)
+          .update(JSON.stringify(req.body))
+          .digest('hex');
+
+        if (signature !== expectedSignature) {
+          logger.warn('Invalid webhook signature');
+          res.status(401).json({ success: false, message: 'Invalid signature' });
+          return;
+        }
       }
 
       const exportRequest = await ExportRequest.findById(exportId);
       if (!exportRequest) {
+        logger.warn(`Webhook received for non-existent export: ${exportId}`);
         res.status(404).json({ success: false, message: 'Export not found' });
         return;
       }
@@ -260,6 +334,7 @@ export class ExportController {
           exportRequest.outputUrl = outputFile;
           exportRequest.renderId = renderId;
           exportRequest.bucketName = bucketName;
+          exportRequest.progress = 100;
           await exportRequest.save();
 
           await this.notificationService.sendExportNotification(
@@ -306,6 +381,68 @@ export class ExportController {
       res.json({ success: true });
     } catch (error) {
       logger.error('Webhook handler error:', error);
+      next(error);
+    }
+  }
+
+  /**
+   * Cancel an ongoing export
+   */
+  public async cancelExport(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const userId = (req as any).userId;
+      const { exportId } = req.params;
+
+      const exportRequest = await ExportRequest.findOne({
+        _id: exportId,
+        userId,
+      });
+
+      if (!exportRequest) {
+        res.status(404).json({
+          success: false,
+          message: 'Export request not found',
+        });
+        return;
+      }
+
+      if (!['pending', 'queued', 'processing'].includes(exportRequest.status)) {
+        res.status(400).json({
+          success: false,
+          message: `Cannot cancel export with status: ${exportRequest.status}`,
+        });
+        return;
+      }
+
+      // Stop Step Functions execution if it exists
+      if (exportRequest.executionArn) {
+        try {
+          await this.remotionSQSService.stopStepFunctionsExecution(
+            exportRequest.executionArn,
+            'User requested cancellation'
+          );
+          logger.info(`Stopped Step Functions execution: ${exportRequest.executionArn}`);
+        } catch (error) {
+          logger.error('Failed to stop Step Functions execution:', error);
+        }
+      }
+
+      exportRequest.status = 'failed';
+      exportRequest.errorMessage = 'Cancelled by user';
+      await exportRequest.save();
+
+      logger.info(`Export cancelled: ${exportId}`);
+
+      res.json({
+        success: true,
+        message: 'Export cancelled successfully',
+        data: {
+          exportId: exportRequest._id,
+          status: exportRequest.status,
+        },
+      });
+    } catch (error) {
+      logger.error('Cancel export error:', error);
       next(error);
     }
   }

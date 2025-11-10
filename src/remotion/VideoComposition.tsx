@@ -1,181 +1,126 @@
+import { Layer } from '../types';
 import React from 'react';
 import {
   AbsoluteFill,
-  Audio,
-  interpolate,
+  OffthreadVideo,
   Sequence,
-  useCurrentFrame,
   useVideoConfig,
-  Video,
-  Img,
-  staticFile,
+  useCurrentFrame,
+  interpolate,
 } from 'remotion';
+import { BlurEffect } from './BlurEffect';
+import { HighlightEffect } from './HighlightEffect';
 
-interface VideoCompositionProps {
-  videoUrl: string;
-  compositionSettings: {
-    title?: string;
-    subtitle?: string;
-    overlayText?: string;
-    backgroundColor?: string;
-    textColor?: string;
-    logoUrl?: string;
-    audioUrl?: string;
-    effects?: {
-      fadeIn?: boolean;
-      fadeOut?: boolean;
-      zoom?: boolean;
-    };
-  };
+interface VideoWithEffectsProps {
+  videoUrl: string | null;
+  compositionSettings: { layers: Layer[] };
 }
 
-export const VideoComposition: React.FC<VideoCompositionProps> = ({
+export const VideoComposition: React.FC<VideoWithEffectsProps> = ({
   videoUrl,
   compositionSettings,
 }) => {
+  const { fps, width, height } = useVideoConfig();
   const frame = useCurrentFrame();
-  const { fps, durationInFrames, width, height } = useVideoConfig();
+  const { layers } = compositionSettings;
 
-  const {
-    title,
-    subtitle,
-    overlayText,
-    backgroundColor = '#000000',
-    textColor = '#FFFFFF',
-    logoUrl,
-    audioUrl,
-    effects = {},
-  } = compositionSettings;
+  const sortedLayers = [...layers].sort((a, b) => a.start - b.start);
 
-  // Fade in effect (first 30 frames / 1 second)
-  const fadeIn = effects.fadeIn
-    ? interpolate(frame, [0, 30], [0, 1], {
-        extrapolateRight: 'clamp',
-      })
-    : 1;
+  // Calculate zoom transformation for current frame
+  const getZoomTransform = () => {
+    const activeZoomLayer = sortedLayers.find(layer => {
+      if (layer.type !== 'zoom') return false;
 
-  // Fade out effect (last 30 frames / 1 second)
-  const fadeOut = effects.fadeOut
-    ? interpolate(frame, [durationInFrames - 30, durationInFrames], [1, 0], {
-        extrapolateLeft: 'clamp',
-      })
-    : 1;
+      const layerStartFrame = Math.floor(layer.start * fps);
+      const layerEndFrame =
+        layerStartFrame +
+        Math.ceil((layer.introDuration + layer.mainDuration + layer.outroDuration) * fps);
 
-  const opacity = Math.min(fadeIn, fadeOut);
+      return frame >= layerStartFrame && frame < layerEndFrame;
+    });
 
-  // Zoom effect
-  const scale = effects.zoom
-    ? interpolate(frame, [0, durationInFrames], [1, 1.2], {
-        extrapolateRight: 'clamp',
-      })
-    : 1;
+    if (!activeZoomLayer) {
+      return { scale: 1, translateX: 0, translateY: 0 };
+    }
+
+    const layerStartFrame = Math.floor(activeZoomLayer.start * fps);
+    const localFrame = frame - layerStartFrame;
+
+    const introEndFrame = activeZoomLayer.introDuration * fps;
+    const mainEndFrame = introEndFrame + activeZoomLayer.mainDuration * fps;
+    const outroEndFrame = mainEndFrame + activeZoomLayer.outroDuration * fps;
+
+    const easeInOutCubic = (t: number) =>
+      t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+
+    let easedProgress = 0;
+    if (localFrame <= introEndFrame) {
+      easedProgress = easeInOutCubic(
+        interpolate(localFrame, [0, introEndFrame], [0, 1], {
+          extrapolateRight: 'clamp',
+        })
+      );
+    } else if (localFrame <= mainEndFrame) {
+      easedProgress = 1;
+    } else if (localFrame <= outroEndFrame) {
+      easedProgress = easeInOutCubic(
+        interpolate(localFrame, [mainEndFrame, outroEndFrame], [1, 0], {
+          extrapolateRight: 'clamp',
+        })
+      );
+    }
+
+    const scale = interpolate(easedProgress, [0, 1], [1, activeZoomLayer.data.zoomFactor || 1.5]);
+
+    const layerCenterX = activeZoomLayer.data.x + activeZoomLayer.data.width / 2;
+    const layerCenterY = activeZoomLayer.data.y + activeZoomLayer.data.height / 2;
+
+    let translateX = -width * layerCenterX * (scale - 1);
+    let translateY = -height * layerCenterY * (scale - 1);
+
+    const scaledWidth = width * scale;
+    const scaledHeight = height * scale;
+
+    const minTranslateX = Math.min(0, width - scaledWidth);
+    const maxTranslateX = 0;
+    const minTranslateY = Math.min(0, height - scaledHeight);
+    const maxTranslateY = 0;
+
+    translateX = Math.min(maxTranslateX, Math.max(minTranslateX, translateX));
+    translateY = Math.min(maxTranslateY, Math.max(minTranslateY, translateY));
+
+    return { scale, translateX, translateY };
+  };
+
+  const zoomTransform = getZoomTransform();
 
   return (
-    <AbsoluteFill style={{ backgroundColor }}>
-      {/* Main Video */}
-      <AbsoluteFill
-        style={{
-          opacity,
-          transform: `scale(${scale})`,
-        }}
-      >
-        <Video
-          src={videoUrl}
-          style={{
-            width: '100%',
-            height: '100%',
-            objectFit: 'cover',
-          }}
-        />
-      </AbsoluteFill>
-
-      {/* Audio Track (if provided) */}
-      {audioUrl && <Audio src={audioUrl} />}
-
-      {/* Logo Overlay */}
-      {logoUrl && (
-        <AbsoluteFill
-          style={{
-            justifyContent: 'flex-start',
-            alignItems: 'flex-end',
-            padding: 40,
-          }}
-        >
-          <Img
-            src={logoUrl}
-            style={{
-              width: 150,
-              height: 'auto',
-              opacity: 0.8,
-            }}
-          />
-        </AbsoluteFill>
-      )}
-
-      {/* Title Sequence (first 3 seconds) */}
-      {title && (
-        <Sequence from={0} durationInFrames={90}>
+    <AbsoluteFill>
+      {videoUrl && (
+        <AbsoluteFill style={{ overflow: 'hidden' }}>
           <AbsoluteFill
             style={{
-              justifyContent: 'center',
-              alignItems: 'center',
-              backgroundColor: 'rgba(0, 0, 0, 0.5)',
+              transform: `translate(${zoomTransform.translateX}px, ${zoomTransform.translateY}px) scale(${zoomTransform.scale})`,
+              transformOrigin: 'top left',
+              willChange: 'transform',
             }}
           >
-            <div
-              style={{
-                fontSize: 80,
-                fontWeight: 'bold',
-                color: textColor,
-                textAlign: 'center',
-                padding: 40,
-                fontFamily: 'Arial, sans-serif',
-                opacity: interpolate(frame, [0, 15, 75, 90], [0, 1, 1, 0]),
-              }}
-            >
-              {title}
-            </div>
-            {subtitle && (
-              <div
-                style={{
-                  fontSize: 40,
-                  color: textColor,
-                  textAlign: 'center',
-                  marginTop: 20,
-                  fontFamily: 'Arial, sans-serif',
-                  opacity: interpolate(frame, [15, 30, 75, 90], [0, 1, 1, 0]),
-                }}
-              >
-                {subtitle}
-              </div>
-            )}
+            <OffthreadVideo src={videoUrl} />
           </AbsoluteFill>
-        </Sequence>
-      )}
-
-      {/* Persistent Overlay Text */}
-      {overlayText && (
-        <AbsoluteFill
-          style={{
-            justifyContent: 'flex-end',
-            alignItems: 'center',
-            padding: 60,
-          }}
-        >
-          <div
-            style={{
-              fontSize: 32,
-              color: textColor,
-              backgroundColor: 'rgba(0, 0, 0, 0.7)',
-              padding: '15px 30px',
-              borderRadius: 10,
-              fontFamily: 'Arial, sans-serif',
-            }}
-          >
-            {overlayText}
-          </div>
         </AbsoluteFill>
       )}
+      {sortedLayers.map(layer => (
+        <Sequence
+          from={Math.floor(layer.start * fps)}
+          durationInFrames={Math.ceil(
+            (layer.introDuration + layer.mainDuration + layer.outroDuration) * fps
+          )}
+          key={layer.id}
+        >
+          {layer.type === 'highlight' && <HighlightEffect layer={layer} />}
+          {layer.type === 'blur' && <BlurEffect layer={layer} />}
+        </Sequence>
+      ))}
     </AbsoluteFill>
   );
 };

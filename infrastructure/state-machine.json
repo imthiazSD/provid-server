@@ -1,10 +1,10 @@
 {
-  "Comment": "Remotion Render Workflow with Serial Execution",
-  "StartAt": "TriggerRender",
+  "Comment": "Remotion Render – WaitForTaskToken Pattern",
+  "StartAt": "StartRender",
   "States": {
-    "TriggerRender": {
+    "StartRender": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
       "Parameters": {
         "FunctionName": "arn:aws:lambda:us-east-1:426353511560:function:remotion-render-worker",
         "Payload": {
@@ -12,104 +12,44 @@
           "exportId.$": "$.exportId",
           "projectId.$": "$.projectId",
           "userId.$": "$.userId",
-          "renderConfig.$": "$.renderConfig"
+          "renderConfig.$": "$.renderConfig",
+          "taskToken": "$$.Task.Token"
         }
       },
-      "ResultPath": "$.renderResult",
-      "ResultSelector": {
-        "statusCode.$": "$.StatusCode",
-        "payload.$": "$.Payload"
-      },
-      "Next": "WaitForRender",
-      "Retry": [{
-        "ErrorEquals": ["States.TaskFailed", "Lambda.ServiceException"],
-        "IntervalSeconds": 10,
-        "MaxAttempts": 3,
-        "BackoffRate": 2.0
-      }],
-      "Catch": [{
-        "ErrorEquals": ["States.ALL"],
-        "ResultPath": "$.error",
-        "Next": "RenderFailed"
-      }]
-    },
-    "WaitForRender": {
-      "Type": "Wait",
-      "Seconds": 30,
-      "Next": "CheckRenderStatus"
-    },
-    "CheckRenderStatus": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
-      "Parameters": {
-        "FunctionName": "arn:aws:lambda:us-east-1:426353511560:function:remotion-render-worker",
-        "Payload": {
-          "action": "check",
-          "renderId.$": "$.renderResult.payload.renderId",
-          "bucketName.$": "$.renderResult.payload.bucketName",
-          "exportId.$": "$.exportId"
-        }
-      },
-      "ResultPath": "$.statusResult",
-      "ResultSelector": {
-        "statusCode.$": "$.StatusCode",
-        "payload.$": "$.Payload"
-      },
-      "Next": "IsRenderComplete",
-      "Retry": [{
-        "ErrorEquals": ["Lambda.TooManyRequestsException"],
-        "IntervalSeconds": 5,
-        "MaxAttempts": 10,
-        "BackoffRate": 2.0
-      }]
-    },
-    "IsRenderComplete": {
-      "Type": "Choice",
-      "Choices": [
+      "HeartbeatSeconds": 600,
+      "TimeoutSeconds": 86400,
+      "ResultPath": "$.result",
+      "Retry": [
         {
-          "Variable": "$.statusResult.payload.done",
-          "BooleanEquals": true,
-          "Next": "RenderSuccess"
-        },
-        {
-          "Variable": "$.statusResult.payload.failed",
-          "BooleanEquals": true,
-          "Next": "RenderFailed"
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
         }
       ],
-      "Default": "WaitForRender"
-    },
-    "RenderSuccess": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
-      "Parameters": {
-        "FunctionName": "arn:aws:lambda:us-east-1:426353511560:function:remotion-render-worker",
-        "Payload": {
-          "action": "complete",
-          "exportId.$": "$.exportId",
-          "projectId.$": "$.projectId",
-          "userId.$": "$.userId",
-          "outputUrl.$": "$.statusResult.payload.outputFile",
-          "renderId.$": "$.renderResult.payload.renderId",
-          "bucketName.$": "$.renderResult.payload.bucketName"
+      "Catch": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "Next": "RenderFailed",
+          "ResultPath": "$.error"
+        },
+        {
+          "ErrorEquals": ["States.Timeout"],
+          "Next": "RenderTimeout",
+          "ResultPath": "$.error"
         }
-      },
+      ],
       "End": true
     },
     "RenderFailed": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
-      "Parameters": {
-        "FunctionName": "arn:aws:lambda:us-east-1:426353511560:function:remotion-render-worker",
-        "Payload": {
-          "action": "failed",
-          "exportId.$": "$.exportId",
-          "projectId.$": "$.projectId",
-          "userId.$": "$.userId",
-          "error.$": "$.statusResult.payload.error"
-        }
-      },
-      "End": true
+      "Type": "Fail",
+      "Error": "RenderFailed",
+      "Cause": "Lambda task failed during render"
+    },
+    "RenderTimeout": {
+      "Type": "Fail",
+      "Error": "RenderTimeout",
+      "Cause": "Render exceeded 24-hour timeout"
     }
   }
 }

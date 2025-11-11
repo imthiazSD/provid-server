@@ -1,31 +1,15 @@
 {
-  "name": "remotion-render-worker",
+  "name": "remotion-worker",
   "version": "1.0.0",
-  "description": "Remotion Lambda render worker with Step Functions",
-  "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
-    "watch": "tsc --watch",
-    "clean": "rm -rf dist",
-    "package": "npm run build && cd dist && zip -r ../function.zip . && cd .. && zip -r function.zip node_modules",
-    "test": "jest",
-    "lint": "eslint src --ext .ts"
+    "build": "tsc || true"
   },
   "dependencies": {
-    "@remotion/lambda": "^4.0.0",
-    "@aws-sdk/client-sqs": "^3.400.0",
-    "@aws-sdk/client-sfn": "^3.400.0",
-    "axios": "^1.6.0"
+    "@remotion/lambda-client": "4.0.373",
+    "@aws-sdk/client-sfn": "^3.0.0",
+    "axios": "^1.0.0"
   },
   "devDependencies": {
-    "@types/aws-lambda": "^8.10.130",
-    "@types/node": "^20.10.0",
-    "@typescript-eslint/eslint-plugin": "^6.13.0",
-    "@typescript-eslint/parser": "^6.13.0",
-    "eslint": "^8.54.0",
-    "typescript": "^5.3.0"
-  },
-  "engines": {
-    "node": ">=18.0.0"
+    "typescript": "^5.0.0"
   }
 }

@@ -1,448 +1,258 @@
-import { NextFunction, Request, Response } from 'express';
+import { Request, Response, NextFunction } from 'express';
 import { ExportRequest } from '../models/export.model';
 import { Project } from '../models/project.model';
-import { NotificationService } from '../services/notification.service';
-import { RemotionSQSService } from '../services/remotion-sqs.service';
-import { logger } from '../utils/logger';
-import { WEBHOOK_URL } from '../utils/constants';
+import { SFNClient, StartExecutionCommand, DescribeExecutionCommand, StopExecutionCommand } from '@aws-sdk/client-sfn';
+import axios from 'axios';
+
+const sfnClient = new SFNClient({ region: process.env.AWS_REGION || 'us-east-1' });
 
 export class ExportController {
-  private remotionSQSService: RemotionSQSService;
-  private notificationService: NotificationService;
-
-  constructor() {
-    this.remotionSQSService = new RemotionSQSService();
-    this.notificationService = new NotificationService();
-  }
-
+  // ──────────────────────────────────────────────────────────────────────
+  // 1. POST /api/export/:projectId/export → Queue render
+  // ──────────────────────────────────────────────────────────────────────
   public async exportVideo(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const userId = (req as any).userId;
       const { projectId } = req.params;
       const { compositionId, codec } = req.body;
 
-      // Verify project ownership
       const project = await Project.findOne({ _id: projectId, userId });
-      if (!project) {
-        res.status(404).json({
-          success: false,
-          message: 'Project not found',
-        });
-        return;
+      if (!project) return res.status(404).json({ success: false, message: 'Project not found' });
+
+      if (!project.compositionSettings?.videoUrl) {
+        return res.status(400).json({ success: false, message: 'Missing video URL' });
       }
 
-      // Check if video URL exists and is a valid string
-      if (
-        !project.compositionSettings.videoUrl ||
-        typeof project.compositionSettings.videoUrl !== 'string'
-      ) {
-        res.status(400).json({
-          success: false,
-          message: 'Invalid or missing video URL for this project',
-        });
-        return;
-      }
-
-      // Check for existing pending/processing export
-      const existingExport = await ExportRequest.findOne({
+      const existing = await ExportRequest.findOne({
         projectId,
         userId,
         status: { $in: ['pending', 'queued', 'processing'] },
       });
-
-      if (existingExport) {
-        res.status(409).json({
+      if (existing) {
+        return res.status(409).json({
           success: false,
-          message: 'Export already in progress for this project',
-          data: {
-            exportId: existingExport._id,
-            status: existingExport.status,
-            executionArn: existingExport.executionArn,
-          },
+          message: 'Export already in progress',
+          data: { exportId: existing._id, status: existing.status },
         });
-        return;
       }
 
-      // Create export request
-      const exportRequest = new ExportRequest({
+      const exportRequest = await new ExportRequest({
         projectId,
         userId,
-        status: 'pending',
+        status: 'queued',
         createdAt: new Date(),
-      });
+      }).save();
 
-      await exportRequest.save();
-
-      // Prepare webhook URL for status updates
-      const webhookUrl = WEBHOOK_URL;
-
-      // Convert compositionSettings to plain object and structure inputProps
-      const { videoUrl, ...otherSettings } = project.compositionSettings.toObject
-        ? project.compositionSettings.toObject()
-        : project.compositionSettings;
-
-      const inputProps = {
-        videoUrl,
-        compositionSettings: {
-          ...otherSettings,
-          projectId: project._id.toString(),
+      const input = {
+        exportId: exportRequest._id.toString(),
+        projectId: project._id.toString(),
+        userId,
+        renderConfig: {
+          compositionId: compositionId || 'MainComposition',
+          inputProps: {
+            videoUrl: project.compositionSettings.videoUrl,
+            compositionSettings: { ...project.compositionSettings.toObject(), projectId: project._id.toString() },
+          },
+          codec: codec || 'h264',
         },
       };
 
-      // Log inputProps for debugging
-      logger.info('Constructed inputProps:', JSON.stringify(inputProps, null, 2));
-
-      // Enqueue render request to SQS (will trigger Step Functions)
-      const messageId = await this.remotionSQSService.enqueueRenderRequest({
-        exportId: exportRequest._id.toString(),
-        projectId: project._id.toString(),
-        userId: userId,
-        compositionId: compositionId || 'MainComposition',
-        inputProps,
-        codec: codec || 'h264',
-        webhookUrl,
+      const command = new StartExecutionCommand({
+        stateMachineArn: process.env.STATE_MACHINE_ARN!,
+        input: JSON.stringify(input),
+        name: `render-${exportRequest._id}-${Date.now()}`,
       });
 
-      // Update export request with queue message ID
-      exportRequest.queueMessageId = messageId;
+      const result = await sfnClient.send(command);
+      exportRequest.executionArn = result.executionArn;
       await exportRequest.save();
-
-      logger.info(
-        `Export request queued: ${exportRequest._id} for project: ${projectId}, messageId: ${messageId}`
-      );
 
       res.json({
         success: true,
-        message: 'Export request queued successfully. Step Functions will handle the render.',
         data: {
           exportId: exportRequest._id,
-          queueMessageId: messageId,
-          status: exportRequest.status,
-          estimatedTime: '2-5 minutes',
-          note: 'Render will execute serially. Check status endpoint for updates.',
+          executionArn: result.executionArn,
+          status: 'queued',
         },
       });
     } catch (error) {
-      logger.error('Export video error:', error);
       next(error);
     }
   }
 
+  // ──────────────────────────────────────────────────────────────────────
+  // 2. GET /api/export/:exportId/status → DB status
+  // ──────────────────────────────────────────────────────────────────────
   public async getExportStatus(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const userId = (req as any).userId;
       const { exportId } = req.params;
 
-      const exportRequest = await ExportRequest.findOne({
-        _id: exportId,
-        userId,
-      }).populate('projectId', 'title');
-
-      if (!exportRequest) {
-        res.status(404).json({
-          success: false,
-          message: 'Export request not found',
-        });
-        return;
-      }
-
-      // Build response with available data
-      const responseData: any = {
-        exportId: exportRequest._id,
-        projectId: exportRequest.projectId,
-        status: exportRequest.status,
-        outputUrl: exportRequest.outputUrl,
-        errorMessage: exportRequest.errorMessage,
-        executionArn: exportRequest.executionArn,
-        renderId: exportRequest.renderId,
-        bucketName: exportRequest.bucketName,
-        createdAt: exportRequest.createdAt,
-        updatedAt: exportRequest.updatedAt,
-      };
-
-      // If processing and we have progress data
-      if (exportRequest.progress !== undefined && exportRequest.progress !== null) {
-        responseData.progress = {
-          percent: exportRequest.progress,
-        };
-      }
-
-      // Add helpful status descriptions
-      const statusDescriptions: Record<string, string> = {
-        pending: 'Export queued, waiting to start',
-        queued: 'Export in Step Functions queue',
-        processing: 'Render in progress',
-        completed: 'Render completed successfully',
-        failed: 'Render failed',
-      };
-
-      responseData.statusDescription = statusDescriptions[exportRequest.status] || 'Unknown status';
+      const exp = await ExportRequest.findOne({ _id: exportId, userId }).populate('projectId', 'title');
+      if (!exp) return res.status(404).json({ success: false, message: 'Not found' });
 
       res.json({
         success: true,
-        data: responseData,
+        data: {
+          exportId: exp._id,
+          status: exp.status,
+          outputUrl: exp.outputUrl,
+          errorMessage: exp.errorMessage,
+          executionArn: exp.executionArn,
+          progress: exp.progress,
+          createdAt: exp.createdAt,
+          projectTitle: (exp.projectId as any)?.title,
+        },
       });
     } catch (error) {
-      logger.error('Get export status error:', error);
       next(error);
     }
   }
 
-  /**
-   * Get Step Functions execution status
-   * Additional endpoint to check Step Functions execution
-   */
+  // ──────────────────────────────────────────────────────────────────────
+  // 3. GET /api/export/:exportId/execution → Step Functions status
+  // ──────────────────────────────────────────────────────────────────────
   public async getExecutionStatus(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const userId = (req as any).userId;
       const { exportId } = req.params;
 
-      const exportRequest = await ExportRequest.findOne({
-        _id: exportId,
-        userId,
+      const exp = await ExportRequest.findOne({ _id: exportId, userId });
+      if (!exp || !exp.executionArn) {
+        return res.status(404).json({ success: false, message: 'Execution not found' });
+      }
+
+      const command = new DescribeExecutionCommand({
+        executionArn: exp.executionArn,
       });
 
-      if (!exportRequest) {
-        res.status(404).json({
-          success: false,
-          message: 'Export request not found',
-        });
-        return;
-      }
-
-      if (!exportRequest.executionArn) {
-        res.status(400).json({
-          success: false,
-          message: 'No Step Functions execution found for this export',
-        });
-        return;
-      }
-
-      // Get execution status from Step Functions
-      try {
-        const executionStatus = await this.remotionSQSService.getStepFunctionsExecutionStatus(
-          exportRequest.executionArn
-        );
-
-        res.json({
-          success: true,
-          data: {
-            exportId: exportRequest._id,
-            executionArn: exportRequest.executionArn,
-            executionStatus,
-          },
-        });
-      } catch (sfnError) {
-        logger.error('Failed to get Step Functions execution status:', sfnError);
-        res.status(500).json({
-          success: false,
-          message: 'Failed to retrieve execution status from Step Functions',
-        });
-      }
-    } catch (error) {
-      logger.error('Get execution status error:', error);
-      next(error);
-    }
-  }
-
-  public async getExportHistory(req: Request, res: Response, next: NextFunction): Promise<void> {
-    try {
-      const userId = (req as any).userId;
-      const page = parseInt(req.query.page as string) || 1;
-      const limit = parseInt(req.query.limit as string) || 10;
-      const skip = (page - 1) * limit;
-
-      const exports = await ExportRequest.find({ userId })
-        .populate('projectId', 'title')
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit);
-
-      const total = await ExportRequest.countDocuments({ userId });
+      const result = await sfnClient.send(command);
 
       res.json({
         success: true,
         data: {
-          exports: exports.map(exp => ({
-            id: exp._id,
-            projectId: exp.projectId,
-            status: exp.status,
-            outputUrl: exp.outputUrl,
-            errorMessage: exp.errorMessage,
-            executionArn: exp.executionArn,
-            progress: exp.progress,
-            createdAt: exp.createdAt,
-            updatedAt: exp.updatedAt,
+          executionArn: result.executionArn,
+          status: result.status,
+          startDate: result.startDate,
+          stopDate: result.stopDate,
+          input: result.input ? JSON.parse(result.input) : null,
+          output: result.output ? JSON.parse(result.output) : null,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // 4. GET /api/export/history → User export history
+  // ──────────────────────────────────────────────────────────────────────
+  public async getExportHistory(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const userId = (req as any).userId;
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = Math.min(parseInt(req.query.limit as string) || 10, 50);
+      const skip = (page - 1) * limit;
+
+      const [exports, total] = await Promise.all([
+        ExportRequest.find({ userId })
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(limit)
+          .populate('projectId', 'title')
+          .lean(),
+        ExportRequest.countDocuments({ userId }),
+      ]);
+
+      res.json({
+        success: true,
+        data: {
+          exports: exports.map(e => ({
+            exportId: e._id,
+            projectId: e.projectId,
+            projectTitle: (e.projectId as any)?.title,
+            status: e.status,
+            outputUrl: e.outputUrl,
+            createdAt: e.createdAt,
+            progress: e.progress,
           })),
           pagination: {
-            current: page,
-            pages: Math.ceil(total / limit),
+            page,
+            limit,
             total,
+            pages: Math.ceil(total / limit),
           },
         },
       });
     } catch (error) {
-      logger.error('Get export history error:', error);
       next(error);
     }
   }
 
-  /**
-   * Webhook endpoint that receives updates from the Lambda render function
-   * The Lambda function calls this after each action (started, completed, failed)
-   */
+  // ──────────────────────────────────────────────────────────────────────
+  // 5. POST /api/export/webhook → Receive Remotion webhook
+  // ──────────────────────────────────────────────────────────────────────
   public async handleWebhook(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { type, exportId, renderId, bucketName, outputFile, errors, projectId } = req.body;
+      const { type, exportId, outputFile, renderId, bucketName, customData, errors } = req.body;
+      const taskToken = customData?.taskToken;
 
-      // Verify webhook signature if configured
-      const signature = req.headers['x-remotion-signature'];
-      if (process.env.WEBHOOK_SECRET && signature) {
-        const crypto = await import('crypto');
-        const expectedSignature = crypto
-          .createHmac('sha256', process.env.WEBHOOK_SECRET)
-          .update(JSON.stringify(req.body))
-          .digest('hex');
-
-        if (signature !== expectedSignature) {
-          logger.warn('Invalid webhook signature');
-          res.status(401).json({ success: false, message: 'Invalid signature' });
-          return;
-        }
+      if (!taskToken || !exportId) {
+        return res.status(400).json({ success: false, message: 'Missing taskToken or exportId' });
       }
 
-      const exportRequest = await ExportRequest.findById(exportId);
-      if (!exportRequest) {
-        logger.warn(`Webhook received for non-existent export: ${exportId}`);
-        res.status(404).json({ success: false, message: 'Export not found' });
-        return;
-      }
+      const action = type === 'render-completed' ? 'webhook-complete' : 'webhook-failed';
 
-      // Handle different webhook types
-      switch (type) {
-        case 'render_started':
-          exportRequest.status = 'processing';
-          exportRequest.renderId = renderId;
-          exportRequest.bucketName = bucketName;
-          await exportRequest.save();
-
-          logger.info(`Render started: ${exportId}, renderId: ${renderId}`);
-          break;
-
-        case 'render_success':
-          exportRequest.status = 'completed';
-          exportRequest.outputUrl = outputFile;
-          exportRequest.renderId = renderId;
-          exportRequest.bucketName = bucketName;
-          exportRequest.progress = 100;
-          await exportRequest.save();
-
-          await this.notificationService.sendExportNotification(
-            exportRequest.userId.toString(),
-            exportRequest,
-            'completed'
-          );
-
-          logger.info(`Export completed: ${exportId}`);
-          break;
-
-        case 'render_error':
-          exportRequest.status = 'failed';
-          exportRequest.errorMessage = errors?.[0]?.message || 'Render failed';
-          await exportRequest.save();
-
-          await this.notificationService.sendExportNotification(
-            exportRequest.userId.toString(),
-            exportRequest,
-            'failed'
-          );
-
-          logger.error(`Export failed: ${exportId}`, errors);
-          break;
-
-        case 'render_timeout':
-          exportRequest.status = 'failed';
-          exportRequest.errorMessage = 'Render timeout';
-          await exportRequest.save();
-
-          await this.notificationService.sendExportNotification(
-            exportRequest.userId.toString(),
-            exportRequest,
-            'failed'
-          );
-
-          logger.error(`Export timeout: ${exportId}`);
-          break;
-
-        default:
-          logger.warn(`Unknown webhook type: ${type}`);
-      }
+      await axios.post(process.env.WORKER_LAMBDA_URL!, {
+        action,
+        exportId,
+        outputUrl: outputFile,
+        taskToken,
+        error: action === 'webhook-failed' ? (errors?.[0] || 'Unknown error') : undefined,
+      }).catch(err => {
+        console.error('Failed to forward webhook to worker:', err.message);
+      });
 
       res.json({ success: true });
     } catch (error) {
-      logger.error('Webhook handler error:', error);
       next(error);
     }
   }
 
-  /**
-   * Cancel an ongoing export
-   */
+  // ──────────────────────────────────────────────────────────────────────
+  // 6. DELETE /api/export/:exportId/cancel → Cancel execution
+  // ──────────────────────────────────────────────────────────────────────
   public async cancelExport(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const userId = (req as any).userId;
       const { exportId } = req.params;
 
-      const exportRequest = await ExportRequest.findOne({
-        _id: exportId,
-        userId,
-      });
+      const exp = await ExportRequest.findOne({ _id: exportId, userId });
+      if (!exp) return res.status(404).json({ success: false, message: 'Export not found' });
 
-      if (!exportRequest) {
-        res.status(404).json({
-          success: false,
-          message: 'Export request not found',
-        });
-        return;
+      if (!['queued', 'processing'].includes(exp.status)) {
+        return res.status(400).json({ success: false, message: 'Export cannot be canceled' });
       }
 
-      if (!['pending', 'queued', 'processing'].includes(exportRequest.status)) {
-        res.status(400).json({
-          success: false,
-          message: `Cannot cancel export with status: ${exportRequest.status}`,
-        });
-        return;
+      if (exp.executionArn) {
+        await sfnClient.send(
+          new StopExecutionCommand({
+            executionArn: exp.executionArn,
+            cause: 'Canceled by user',
+          })
+        );
       }
 
-      // Stop Step Functions execution if it exists
-      if (exportRequest.executionArn) {
-        try {
-          await this.remotionSQSService.stopStepFunctionsExecution(
-            exportRequest.executionArn,
-            'User requested cancellation'
-          );
-          logger.info(`Stopped Step Functions execution: ${exportRequest.executionArn}`);
-        } catch (error) {
-          logger.error('Failed to stop Step Functions execution:', error);
-        }
-      }
-
-      exportRequest.status = 'failed';
-      exportRequest.errorMessage = 'Cancelled by user';
-      await exportRequest.save();
-
-      logger.info(`Export cancelled: ${exportId}`);
+      exp.status = 'canceled';
+      exp.errorMessage = 'Canceled by user';
+      await exp.save();
 
       res.json({
         success: true,
-        message: 'Export cancelled successfully',
-        data: {
-          exportId: exportRequest._id,
-          status: exportRequest.status,
-        },
+        message: 'Export canceled',
+        data: { exportId, status: 'canceled' },
       });
     } catch (error) {
-      logger.error('Cancel export error:', error);
       next(error);
     }
   }

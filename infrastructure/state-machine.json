@@ -1,0 +1,55 @@
+{
+  "Comment": "Remotion Render – WaitForTaskToken Pattern",
+  "StartAt": "StartRender",
+  "States": {
+    "StartRender": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "arn:aws:lambda:us-east-1:426353511560:function:remotion-render-worker",
+        "Payload": {
+          "action": "start",
+          "exportId.$": "$.exportId",
+          "projectId.$": "$.projectId",
+          "userId.$": "$.userId",
+          "renderConfig.$": "$.renderConfig",
+          "taskToken": "$$.Task.Token"
+        }
+      },
+      "HeartbeatSeconds": 600,
+      "TimeoutSeconds": 86400,
+      "ResultPath": "$.result",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "Next": "RenderFailed",
+          "ResultPath": "$.error"
+        },
+        {
+          "ErrorEquals": ["States.Timeout"],
+          "Next": "RenderTimeout",
+          "ResultPath": "$.error"
+        }
+      ],
+      "End": true
+    },
+    "RenderFailed": {
+      "Type": "Fail",
+      "Error": "RenderFailed",
+      "Cause": "Lambda task failed during render"
+    },
+    "RenderTimeout": {
+      "Type": "Fail",
+      "Error": "RenderTimeout",
+      "Cause": "Render exceeded 24-hour timeout"
+    }
+  }
+}

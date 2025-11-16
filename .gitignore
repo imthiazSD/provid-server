@@ -95,3 +95,13 @@ jspm_packages/
 .tern-port
 
 lambda/render-function/function.zip
+lambda/render-function/layer
+lambda/render-function/layer.zip
+lambda/render-function/function/index.js
+lambda/render-function/index.d.ts
+lambda/render-function/index.d.ts.map
+lambda/render-function/index.js
+lambda/render-function/index.js.map
+infrastructure/state-machine.json
+
+build

@@ -27,7 +27,7 @@ echo ""
 
 # Step 1: Start Export
 echo "1️⃣  Starting export..."
-EXPORT_RESPONSE=$(curl -s -X POST "$API_URL/api/exports/projects/$PROJECT_ID/export" \
+EXPORT_RESPONSE=$(curl -s -X POST "$API_URL/api/exports/$PROJECT_ID/export" \
   -H "Authorization: Bearer $AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{

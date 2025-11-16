@@ -1,21 +1,15 @@
 {
-  "name": "remotion-render-lambda",
+  "name": "remotion-worker",
   "version": "1.0.0",
-  "description": "Lambda function to process SQS messages and trigger Remotion renders",
-  "main": "index.js",
   "scripts": {
-    "build": "tsc || true",
-    "package": "npm run build && cd dist && zip -r ../function.zip . -x \"*.map\" && cd .. && zip -r function.zip node_modules -x \"*.md\" \"*.txt\" \"test/*\" \"tests/*\" \"*.ts\" \"node_modules/@remotion/*/*.md\" \"node_modules/@remotion/*/test/*\"",
-    "deploy": "aws lambda update-function-code --function-name remotion-render-lambda --zip-file fileb://function.zip"
+    "build": "tsc || true"
   },
   "dependencies": {
-    "@remotion/lambda": "^4.0.365",
-    "aws-lambda": "^1.0.7",
-    "axios": "^1.6.0"
+    "@remotion/lambda-client": "4.0.373",
+    "@aws-sdk/client-sfn": "^3.0.0",
+    "axios": "^1.0.0"
   },
   "devDependencies": {
-    "@types/aws-lambda": "^8.10.156",
-    "@types/node": "^20.0.0",
     "typescript": "^5.0.0"
   }
 }

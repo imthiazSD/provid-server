@@ -26,7 +26,7 @@ const LayerDataSchema = z.object({
   color: z.string().optional(),
   zoomFactor: z.number().positive('Zoom factor must be positive').optional(),
   blurAmount: z.number().min(0, 'Blur amount cannot be negative').optional(),
-  transparency: z.number().min(0).max(1, 'Transparency must be between 0 and 1').optional(),
+  transparency: z.number().min(0).max(100, 'Transparency must be between 0 and 100').optional(),
 });
 
 const LayerSchema = z.object({

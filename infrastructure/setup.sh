@@ -55,17 +55,9 @@ if [ ! -z "$SITES" ]; then
 fi
 
 echo "Deploying new Remotion render function..."
-REMOTION_FUNCTION_NAME=$(
-  ./node_modules/.bin/remotion lambda functions deploy \
-    --region "$REGION" \
-    --memory 2048 \
-    --disk 2048 \
-    --timeout 900 \
-    --yes | grep -oE "remotion-render-[a-z0-9-]+" | head -1
-)
+REMOTION_FUNCTION_NAME=$(./node_modules/.bin/remotion lambda functions deploy --region "$REGION" --yes | grep -oE "remotion-render-[a-z0-9-]+" | head -1)
 [ -z "$REMOTION_FUNCTION_NAME" ] && { echo "ERROR: Failed to deploy Remotion function"; exit 1; }
-echo "Remotion function deployed with 2GB memory, 2GB disk, 15-min timeout: $REMOTION_FUNCTION_NAME"
-
+echo "Remotion function deployed: $REMOTION_FUNCTION_NAME"
 
 echo "Deploying Remotion site..."
 REMOTION_SERVE_URL=$(./node_modules/.bin/remotion lambda sites create src/remotion/index.tsx --region "$REGION" | grep -o 'https://[^ ]\+' | head -1)
@@ -176,9 +168,8 @@ SFN_ROLE_ARN="arn:aws:iam::$ACCOUNT_ID:role/$SFN_ROLE_NAME"
 
 # === 8. Create / Update Worker Lambda ===
 WEBHOOK_SECRET=$(openssl rand -hex 32)
-WEBHOOK_URL="https://your-api.com/webhook"  # CHANGE THIS
 
-ENV_VARS="Variables={REMOTION_LAMBDA_FUNCTION_NAME=$REMOTION_FUNCTION_NAME,REMOTION_SERVE_URL=$REMOTION_SERVE_URL,AWS_REGION_OVERRIDE=$REGION,WEBHOOK_SECRET=$WEBHOOK_SECRET,WEBHOOK_URL=$WEBHOOK_URL}"
+ENV_VARS="Variables={REMOTION_LAMBDA_FUNCTION_NAME=$REMOTION_FUNCTION_NAME,REMOTION_SERVE_URL=$REMOTION_SERVE_URL,AWS_REGION_OVERRIDE=$REGION,WEBHOOK_SECRET=$WEBHOOK_SECRET}"
 
 if ! aws lambda get-function --function-name "$LAMBDA_NAME" --region "$REGION" > /dev/null 2>&1; then
   echo "Creating Lambda: $LAMBDA_NAME"
@@ -215,6 +206,31 @@ else
 fi
 
 LAMBDA_ARN=$(aws lambda get-function --function-name "$LAMBDA_NAME" --region "$REGION" --query 'Configuration.FunctionArn' --output text)
+
+# === 8.5. Create Function URL for Webhook ===
+echo "Creating Lambda Function URL for webhook..."
+FUNCTION_URL=$(aws lambda create-function-url-config \
+  --function-name "$LAMBDA_NAME" \
+  --auth-type NONE \
+  --region "$REGION" \
+  --query 'FunctionUrl' --output text 2>/dev/null || \
+  aws lambda get-function-url-config \
+  --function-name "$LAMBDA_NAME" \
+  --region "$REGION" \
+  --query 'FunctionUrl' --output text)
+
+echo "Function URL: $FUNCTION_URL"
+
+# Add public access permission for Function URL
+aws lambda add-permission \
+  --function-name "$LAMBDA_NAME" \
+  --statement-id FunctionURLAllowPublicAccess \
+  --action lambda:InvokeFunctionUrl \
+  --principal "*" \
+  --function-url-auth-type NONE \
+  --region "$REGION" 2>/dev/null || echo "Permission already exists"
+
+WEBHOOK_URL="${FUNCTION_URL}webhook"
 
 # === 9. State Machine (waitForTaskToken) ===
 mkdir -p infrastructure

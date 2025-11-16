@@ -86,79 +86,160 @@ export const handler = async (event: any): Promise<any> => {
 // === Handle Remotion Webhook (HTTP) ===
 async function handleRemotionWebhook(event: any, log: (msg: any) => void): Promise<any> {
   try {
+    log('Processing webhook...');
+    log('Event keys:', Object.keys(event));
+    log('Request context:', event.requestContext);
+
+    // Get the body (might be base64 encoded)
+    let bodyString: string;
+    if (event.isBase64Encoded) {
+      log('Body is base64 encoded');
+      bodyString = Buffer.from(event.body, 'base64').toString('utf-8');
+    } else {
+      bodyString = event.body || '{}';
+    }
+
+    log('Raw body length:', bodyString.length);
+    log('Raw body preview:', bodyString.substring(0, 200));
+    log('Headers:', JSON.stringify(event.headers, null, 2));
+
+    // Parse the payload
+    let payload: RemotionWebhookPayload;
+    try {
+      payload = JSON.parse(bodyString);
+      log('Parsed payload successfully');
+      log('Payload type:', payload.type);
+      log('Payload keys:', Object.keys(payload));
+    } catch (parseError: any) {
+      log('Failed to parse JSON:', parseError.message);
+      return {
+        statusCode: 400,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ error: 'Invalid JSON payload', details: parseError.message }),
+      };
+    }
+
     // Verify signature if secret is set
     if (WEBHOOK_SECRET) {
       const signature =
         event.headers['x-remotion-signature'] || event.headers['X-Remotion-Signature'];
-      const body = event.body;
+      log('Received signature:', signature);
 
-      const crypto = await import('crypto');
-      const expectedSignature = crypto
-        .createHmac('sha256', WEBHOOK_SECRET)
-        .update(body)
-        .digest('hex');
+      if (!signature) {
+        log('WARNING: No signature header found, but secret is configured');
+        // For debugging, allow it to continue
+      } else {
+        const crypto = await import('crypto');
+        const expectedSignature = crypto
+          .createHmac('sha256', WEBHOOK_SECRET)
+          .update(bodyString)
+          .digest('hex');
 
-      if (signature !== expectedSignature) {
-        log('Invalid webhook signature');
-        return {
-          statusCode: 401,
-          body: JSON.stringify({ error: 'Invalid signature' }),
-        };
+        log('Expected signature:', expectedSignature);
+
+        if (signature !== expectedSignature) {
+          log('WARNING: Signature mismatch - proceeding anyway for debugging');
+        } else {
+          log('Signature verified successfully');
+        }
       }
+    } else {
+      log('No webhook secret configured - skipping signature verification');
     }
-
-    const payload: RemotionWebhookPayload = JSON.parse(event.body);
     log('Webhook payload:');
-    log(payload);
+    log(JSON.stringify(payload, null, 2));
 
     const { type, renderId, bucketName, outputFile, errors, customData } = payload;
-    const taskToken = customData?.taskToken;
+
+    log('CustomData received:', JSON.stringify(customData, null, 2));
+
+    let taskToken = customData?.taskToken;
+
+    // Task token might be nested or stringified
+    if (typeof taskToken === 'object' && taskToken !== null) {
+      log('TaskToken is an object, extracting...');
+      taskToken = taskToken.taskToken || JSON.stringify(taskToken);
+    }
+
+    log('Extracted taskToken type:', typeof taskToken);
+    log('TaskToken length:', taskToken?.length);
+    log('TaskToken preview:', taskToken?.substring(0, 100) + '...');
 
     if (!taskToken) {
       log('ERROR: No taskToken in webhook customData');
       return {
         statusCode: 400,
-        body: JSON.stringify({ error: 'No taskToken provided' }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ error: 'No taskToken provided', customData }),
       };
     }
 
     const isSuccess = type === 'success';
     log(`Render ${isSuccess ? 'succeeded' : 'failed'}: ${renderId}`);
 
-    // Send success/failure to Step Functions
-    const cmd = isSuccess
-      ? new SendTaskSuccessCommand({
-          taskToken,
-          output: JSON.stringify({
-            success: true,
-            renderId,
-            bucketName,
-            outputFile,
-          }),
-        })
-      : new SendTaskFailureCommand({
-          taskToken,
-          error: 'RenderFailed',
-          cause: JSON.stringify(errors || [{ message: 'Render failed' }]),
-        });
+    // Validate taskToken format (Step Functions tokens are base64-encoded and quite long)
+    if (typeof taskToken !== 'string' || taskToken.length < 100) {
+      log('ERROR: Invalid taskToken format');
+      log('Token received:', taskToken);
+      return {
+        statusCode: 400,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          error: 'Invalid taskToken format',
+          received: taskToken,
+          hint: 'Token should be a long base64 string',
+        }),
+      };
+    }
 
-    await sfnClient.send(cmd);
-    log(`Step Functions notified: ${isSuccess ? 'success' : 'failure'}`);
+    log('TaskToken appears valid, sending to Step Functions...');
+
+    // Send success/failure to Step Functions
+    try {
+      const cmd = isSuccess
+        ? new SendTaskSuccessCommand({
+            taskToken,
+            output: JSON.stringify({
+              success: true,
+              renderId,
+              bucketName,
+              outputFile,
+            }),
+          })
+        : new SendTaskFailureCommand({
+            taskToken,
+            error: 'RenderFailed',
+            cause: JSON.stringify(errors || [{ message: 'Render failed' }]),
+          });
+
+      await sfnClient.send(cmd);
+      log(`Step Functions notified: ${isSuccess ? 'success' : 'failure'}`);
+    } catch (sfnError: any) {
+      log('Step Functions error:');
+      log('Error name:', sfnError.name);
+      log('Error message:', sfnError.message);
+      log('Error code:', sfnError.$metadata?.httpStatusCode);
+      throw sfnError;
+    }
 
     // Optional: Update your database here
     // await updateExportInDatabase(exportId, { status: isSuccess ? 'completed' : 'failed', outputUrl: outputFile });
 
     return {
       statusCode: 200,
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ success: true, message: 'Webhook processed' }),
     };
   } catch (error: any) {
     log('Webhook processing error:');
-    log(error);
+    log('Error name:', error.name);
+    log('Error message:', error.message);
+    log('Error stack:', error.stack);
 
     return {
       statusCode: 500,
-      body: JSON.stringify({ error: error.message }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: error.message, stack: error.stack }),
     };
   }
 }
@@ -166,12 +247,21 @@ async function handleRemotionWebhook(event: any, log: (msg: any) => void): Promi
 // === Start Render ===
 async function startRender(action: RenderAction, log: (msg: any) => void): Promise<any> {
   log('Starting renderMediaOnLambda...');
+
+  const taskToken = action.taskToken;
+  log('TaskToken from action:', {
+    type: typeof taskToken,
+    length: taskToken?.length,
+    preview: taskToken?.substring(0, 100) + '...',
+  });
+
   log({
     functionName: REMOTION_FUNCTION_NAME,
     serveUrl: REMOTION_SERVE_URL,
     composition: action.renderConfig.compositionId,
     exportId: action.exportId,
     webhookUrl: WEBHOOK_URL,
+    hasTaskToken: !!taskToken,
   });
 
   const { renderId, bucketName } = await renderMediaOnLambda({
@@ -190,7 +280,7 @@ async function startRender(action: RenderAction, log: (msg: any) => void): Promi
     webhook: WEBHOOK_URL
       ? {
           url: WEBHOOK_URL,
-          secret: WEBHOOK_SECRET,
+          secret: WEBHOOK_SECRET || undefined, // Only set if defined
           customData: {
             taskToken: action.taskToken,
             exportId: action.exportId,

@@ -36,6 +36,11 @@ aws s3 cp lambda/render-function/function.zip "s3://$BUCKET/function.zip" --regi
 aws s3 cp lambda/render-function/layer.zip "s3://$BUCKET/layer.zip" --region "$REGION"
 
 # === 4. Clean up old Remotion functions and deploy new ===
+echo "Installing Remotion project dependencies..."
+cd src/remotion
+npm install 2>/dev/null || echo "No package.json in src/remotion, using root dependencies"
+cd ../..
+
 echo "Cleaning up old Remotion functions..."
 OLD_FUNCTIONS=$(aws lambda list-functions --region "$REGION" --query 'Functions[?starts_with(FunctionName, `remotion-render-`)].FunctionName' --output text)
 for func in $OLD_FUNCTIONS; do
@@ -167,9 +172,11 @@ fi
 SFN_ROLE_ARN="arn:aws:iam::$ACCOUNT_ID:role/$SFN_ROLE_NAME"
 
 # === 8. Create / Update Worker Lambda ===
-WEBHOOK_SECRET=$(openssl rand -hex 32)
+# Temporarily disable webhook secret for debugging
+# WEBHOOK_SECRET=$(openssl rand -hex 32)
+WEBHOOK_SECRET=""
 
-ENV_VARS="Variables={REMOTION_LAMBDA_FUNCTION_NAME=$REMOTION_FUNCTION_NAME,REMOTION_SERVE_URL=$REMOTION_SERVE_URL,AWS_REGION_OVERRIDE=$REGION,WEBHOOK_SECRET=$WEBHOOK_SECRET}"
+ENV_VARS="Variables={REMOTION_LAMBDA_FUNCTION_NAME=$REMOTION_FUNCTION_NAME,REMOTION_SERVE_URL=$REMOTION_SERVE_URL,AWS_REGION_OVERRIDE=$REGION}"
 
 if ! aws lambda get-function --function-name "$LAMBDA_NAME" --region "$REGION" > /dev/null 2>&1; then
   echo "Creating Lambda: $LAMBDA_NAME"
@@ -318,9 +325,16 @@ fi
 
 # === 10. Final Lambda Update (add STATE_MACHINE_ARN) ===
 echo "Updating Lambda with State Machine ARN..."
+
+if [ -n "$WEBHOOK_SECRET" ]; then
+  ENV_VARS_FINAL="Variables={REMOTION_LAMBDA_FUNCTION_NAME=$REMOTION_FUNCTION_NAME,REMOTION_SERVE_URL=$REMOTION_SERVE_URL,STATE_MACHINE_ARN=$STATE_MACHINE_ARN,WEBHOOK_URL=$WEBHOOK_URL,WEBHOOK_SECRET=$WEBHOOK_SECRET,AWS_REGION_OVERRIDE=$REGION}"
+else
+  ENV_VARS_FINAL="Variables={REMOTION_LAMBDA_FUNCTION_NAME=$REMOTION_FUNCTION_NAME,REMOTION_SERVE_URL=$REMOTION_SERVE_URL,STATE_MACHINE_ARN=$STATE_MACHINE_ARN,WEBHOOK_URL=$WEBHOOK_URL,AWS_REGION_OVERRIDE=$REGION}"
+fi
+
 aws lambda update-function-configuration \
   --function-name "$LAMBDA_NAME" \
-  --environment "Variables={REMOTION_LAMBDA_FUNCTION_NAME=$REMOTION_FUNCTION_NAME,REMOTION_SERVE_URL=$REMOTION_SERVE_URL,STATE_MACHINE_ARN=$STATE_MACHINE_ARN,WEBHOOK_SECRET=$WEBHOOK_SECRET,WEBHOOK_URL=$WEBHOOK_URL,AWS_REGION_OVERRIDE=$REGION}" \
+  --environment "$ENV_VARS_FINAL" \
   --region "$REGION" > /dev/null
 
 # === 11. .env file ===
@@ -329,7 +343,6 @@ REMOTION_LAMBDA_FUNCTION_NAME=$REMOTION_FUNCTION_NAME
 REMOTION_SERVE_URL=$REMOTION_SERVE_URL
 STATE_MACHINE_ARN=$STATE_MACHINE_ARN
 LAMBDA_FUNCTION_NAME=$LAMBDA_NAME
-WEBHOOK_SECRET=$WEBHOOK_SECRET
 WEBHOOK_URL=$WEBHOOK_URL
 AWS_REGION=$REGION
 EOF

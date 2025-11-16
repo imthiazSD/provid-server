@@ -258,7 +258,7 @@ cat > infrastructure/state-machine.json <<EOF
           "projectId.\$": "\$.projectId",
           "userId.\$": "\$.userId",
           "renderConfig.\$": "\$.renderConfig",
-          "taskToken": "\$\$.Task.Token"
+          "taskToken.\$": "\$\$.Task.Token"
         }
       },
       "HeartbeatSeconds": 600,

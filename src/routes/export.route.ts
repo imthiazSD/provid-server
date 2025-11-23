@@ -1,9 +1,14 @@
 import { Router } from 'express';
 import { ExportController } from '../controllers/export.controller';
 import { authMiddleware } from '../middleware/auth.middleware';
+import { verifyInternalApiKey } from '../middleware/internal-api.middleware';
 
 const router = Router();
 const exportController = new ExportController();
+
+// ══════════════════════════════════════════════════════════════════════
+// PUBLIC / USER ENDPOINTS (Protected by Auth)
+// ══════════════════════════════════════════════════════════════════════
 
 /**
  * @route   POST /api/export/:projectId/export
@@ -43,11 +48,7 @@ router.get(
  * @desc    Get export history for authenticated user
  * @access  Private
  */
-router.get(
-  '/history',
-  authMiddleware,
-  exportController.getExportHistory.bind(exportController)
-);
+router.get('/history', authMiddleware, exportController.getExportHistory.bind(exportController));
 
 /**
  * @route   POST /api/export/webhook
@@ -65,6 +66,33 @@ router.delete(
   '/:exportId/cancel',
   authMiddleware,
   exportController.cancelExport.bind(exportController)
+);
+
+// ══════════════════════════════════════════════════════════════════════
+// INTERNAL ENDPOINTS (Called by Lambda Worker)
+// Protected by X-API-Key header
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * @route   PATCH /api/export/internal/:exportId
+ * @desc    Update export status and details (Lambda only)
+ * @access  Internal (X-API-Key)
+ */
+router.patch(
+  '/internal/:exportId',
+  verifyInternalApiKey,
+  exportController.updateExportInternal.bind(exportController)
+);
+
+/**
+ * @route   POST /api/export/internal/notification
+ * @desc    Trigger user notification (Lambda only)
+ * @access  Internal (X-API-Key)
+ */
+router.post(
+  '/internal/notification',
+  verifyInternalApiKey,
+  exportController.sendNotificationInternal.bind(exportController)
 );
 
 export default router;

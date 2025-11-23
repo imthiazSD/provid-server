@@ -1,10 +1,18 @@
 import { Request, Response, NextFunction } from 'express';
 import { ExportRequest } from '../models/export.model';
 import { Project } from '../models/project.model';
-import { SFNClient, StartExecutionCommand, DescribeExecutionCommand, StopExecutionCommand } from '@aws-sdk/client-sfn';
+import {
+  SFNClient,
+  StartExecutionCommand,
+  DescribeExecutionCommand,
+  StopExecutionCommand,
+} from '@aws-sdk/client-sfn';
+import { NotificationService } from '../services/notification.service';
+import { logger } from '../utils/logger';
 import axios from 'axios';
 
 const sfnClient = new SFNClient({ region: process.env.AWS_REGION || 'us-east-1' });
+const notificationService = new NotificationService();
 
 export class ExportController {
   // ──────────────────────────────────────────────────────────────────────
@@ -17,10 +25,14 @@ export class ExportController {
       const { compositionId, codec } = req.body;
 
       const project = await Project.findOne({ _id: projectId, userId });
-      if (!project) return res.status(404).json({ success: false, message: 'Project not found' });
+      if (!project) {
+        res.status(404).json({ success: false, message: 'Project not found' });
+        return;
+      }
 
       if (!project.compositionSettings?.videoUrl) {
-        return res.status(400).json({ success: false, message: 'Missing video URL' });
+        res.status(400).json({ success: false, message: 'Missing video URL' });
+        return;
       }
 
       const existing = await ExportRequest.findOne({
@@ -29,11 +41,12 @@ export class ExportController {
         status: { $in: ['pending', 'queued', 'processing'] },
       });
       if (existing) {
-        return res.status(409).json({
+        res.status(409).json({
           success: false,
           message: 'Export already in progress',
           data: { exportId: existing._id, status: existing.status },
         });
+        return;
       }
 
       const exportRequest = await new ExportRequest({
@@ -51,7 +64,10 @@ export class ExportController {
           compositionId: compositionId || 'MainComposition',
           inputProps: {
             videoUrl: project.compositionSettings.videoUrl,
-            compositionSettings: { ...project.compositionSettings.toObject(), projectId: project._id.toString() },
+            compositionSettings: {
+              ...project.compositionSettings.toObject(),
+              projectId: project._id.toString(),
+            },
           },
           codec: codec || 'h264',
         },
@@ -88,8 +104,14 @@ export class ExportController {
       const userId = (req as any).userId;
       const { exportId } = req.params;
 
-      const exp = await ExportRequest.findOne({ _id: exportId, userId }).populate('projectId', 'title');
-      if (!exp) return res.status(404).json({ success: false, message: 'Not found' });
+      const exp = await ExportRequest.findOne({ _id: exportId, userId }).populate(
+        'projectId',
+        'title'
+      );
+      if (!exp) {
+        res.status(404).json({ success: false, message: 'Not found' });
+        return;
+      }
 
       res.json({
         success: true,
@@ -100,6 +122,7 @@ export class ExportController {
           errorMessage: exp.errorMessage,
           executionArn: exp.executionArn,
           progress: exp.progress,
+          estimatedCost: exp.estimatedCost,
           createdAt: exp.createdAt,
           projectTitle: (exp.projectId as any)?.title,
         },
@@ -119,7 +142,8 @@ export class ExportController {
 
       const exp = await ExportRequest.findOne({ _id: exportId, userId });
       if (!exp || !exp.executionArn) {
-        return res.status(404).json({ success: false, message: 'Execution not found' });
+        res.status(404).json({ success: false, message: 'Execution not found' });
+        return;
       }
 
       const command = new DescribeExecutionCommand({
@@ -175,6 +199,7 @@ export class ExportController {
             outputUrl: e.outputUrl,
             createdAt: e.createdAt,
             progress: e.progress,
+            estimatedCost: e.estimatedCost,
           })),
           pagination: {
             page,
@@ -198,20 +223,23 @@ export class ExportController {
       const taskToken = customData?.taskToken;
 
       if (!taskToken || !exportId) {
-        return res.status(400).json({ success: false, message: 'Missing taskToken or exportId' });
+        res.status(400).json({ success: false, message: 'Missing taskToken or exportId' });
+        return;
       }
 
       const action = type === 'render-completed' ? 'webhook-complete' : 'webhook-failed';
 
-      await axios.post(process.env.WORKER_LAMBDA_URL!, {
-        action,
-        exportId,
-        outputUrl: outputFile,
-        taskToken,
-        error: action === 'webhook-failed' ? (errors?.[0] || 'Unknown error') : undefined,
-      }).catch(err => {
-        console.error('Failed to forward webhook to worker:', err.message);
-      });
+      await axios
+        .post(process.env.WORKER_LAMBDA_URL!, {
+          action,
+          exportId,
+          outputUrl: outputFile,
+          taskToken,
+          error: action === 'webhook-failed' ? errors?.[0] || 'Unknown error' : undefined,
+        })
+        .catch(err => {
+          console.error('Failed to forward webhook to worker:', err.message);
+        });
 
       res.json({ success: true });
     } catch (error) {
@@ -228,10 +256,14 @@ export class ExportController {
       const { exportId } = req.params;
 
       const exp = await ExportRequest.findOne({ _id: exportId, userId });
-      if (!exp) return res.status(404).json({ success: false, message: 'Export not found' });
+      if (!exp) {
+        res.status(404).json({ success: false, message: 'Export not found' });
+        return;
+      }
 
       if (!['queued', 'processing'].includes(exp.status)) {
-        return res.status(400).json({ success: false, message: 'Export cannot be canceled' });
+        res.status(400).json({ success: false, message: 'Export cannot be canceled' });
+        return;
       }
 
       if (exp.executionArn) {
@@ -243,17 +275,137 @@ export class ExportController {
         );
       }
 
-      exp.status = 'canceled';
+      exp.status = 'failed';
       exp.errorMessage = 'Canceled by user';
       await exp.save();
 
       res.json({
         success: true,
         message: 'Export canceled',
-        data: { exportId, status: 'canceled' },
+        data: { exportId, status: 'failed' },
       });
     } catch (error) {
       next(error);
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // INTERNAL ENDPOINTS (Called by Lambda Worker)
+  // ══════════════════════════════════════════════════════════════════════
+
+  // ──────────────────────────────────────────────────────────────────────
+  // 7. PATCH /api/export/internal/:exportId → Update export (Lambda only)
+  // ──────────────────────────────────────────────────────────────────────
+  public async updateExportInternal(
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const { exportId } = req.params;
+      const updates = req.body;
+
+      logger.info('Internal: Updating export from Lambda', { exportId, updates });
+
+      if (!exportId || exportId.length !== 24) {
+        res.status(400).json({ success: false, message: 'Invalid exportId' });
+        return;
+      }
+
+      const exportRequest = await ExportRequest.findByIdAndUpdate(
+        exportId,
+        {
+          $set: {
+            ...updates,
+            updatedAt: new Date(),
+          },
+        },
+        { new: true, runValidators: true }
+      );
+
+      if (!exportRequest) {
+        logger.warn('Internal: Export not found', { exportId });
+        res.status(404).json({ success: false, message: 'Export not found' });
+        return;
+      }
+
+      logger.info('Internal: Export updated successfully', {
+        exportId,
+        status: exportRequest.status,
+      });
+
+      res.json({
+        success: true,
+        data: exportRequest,
+      });
+    } catch (error: any) {
+      logger.error('Internal: Update export error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to update export',
+        error: error.message,
+      });
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // 8. POST /api/export/internal/notification → Send notification (Lambda only)
+  // ──────────────────────────────────────────────────────────────────────
+  public async sendNotificationInternal(
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const { userId, exportId, projectId, status, outputUrl, errorMessage } = req.body;
+
+      logger.info('Internal: Sending notification from Lambda', {
+        userId,
+        exportId,
+        status,
+      });
+
+      if (!userId || !exportId || !status) {
+        res.status(400).json({
+          success: false,
+          message: 'Missing required fields: userId, exportId, status',
+        });
+        return;
+      }
+
+      const exportRequest = await ExportRequest.findById(exportId);
+
+      if (!exportRequest) {
+        logger.warn('Internal: Export not found for notification', { exportId });
+        res.status(404).json({ success: false, message: 'Export not found' });
+        return;
+      }
+
+      // Update export with latest data if provided
+      if (outputUrl) exportRequest.outputUrl = outputUrl;
+      if (errorMessage) exportRequest.errorMessage = errorMessage;
+      exportRequest.status = status;
+
+      // Send notification via NotificationService
+      await notificationService.sendExportNotification(userId, exportRequest, status);
+
+      logger.info('Internal: Notification sent successfully', {
+        userId,
+        exportId,
+        status,
+      });
+
+      res.json({
+        success: true,
+        message: 'Notification sent',
+      });
+    } catch (error: any) {
+      logger.error('Internal: Send notification error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to send notification',
+        error: error.message,
+      });
     }
   }
 }

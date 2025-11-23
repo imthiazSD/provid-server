@@ -11,6 +11,7 @@ export interface IExportRequest extends Document {
   outputUrl?: string;
   errorMessage?: string;
   progress?: number; // 0-100
+  estimatedCost?: number; // Cost in USD from Remotion
   createdAt: Date;
   updatedAt: Date;
 }
@@ -65,6 +66,10 @@ const ExportRequestSchema = new Schema<IExportRequest>(
       min: 0,
       max: 100,
       default: 0,
+    },
+    estimatedCost: {
+      type: Number,
+      min: 0,
     },
   },
   {

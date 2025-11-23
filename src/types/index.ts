@@ -1,6 +1,6 @@
 export interface Layer {
   id: string;
-  type: "highlight" | "zoom" | "blur";
+  type: 'highlight' | 'zoom' | 'blur';
   start: number;
   introDuration: number;
   mainDuration: number;
@@ -48,7 +48,7 @@ export interface ExportRequest {
   _id: string;
   projectId: string;
   userId: string;
-  status: "pending" | "processing" | "completed" | "failed";
+  status: 'pending' | 'processing' | 'completed' | 'failed';
   outputUrl?: string;
   errorMessage?: string;
   queueMessageId?: string;

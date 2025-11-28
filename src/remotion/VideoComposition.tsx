@@ -106,21 +106,35 @@ export const VideoComposition: React.FC<VideoWithEffectsProps> = ({
             }}
           >
             <OffthreadVideo src={videoUrl} />
+            {sortedLayers
+              .filter(layer => layer.type === 'blur')
+              .map(layer => (
+                <Sequence
+                  key={layer.id}
+                  from={Math.floor(layer.start * fps)}
+                  durationInFrames={Math.ceil(
+                    (layer.introDuration + layer.mainDuration + layer.outroDuration) * fps
+                  )}
+                >
+                  <BlurEffect layer={layer} />
+                </Sequence>
+              ))}
           </AbsoluteFill>
         </AbsoluteFill>
       )}
-      {sortedLayers.map(layer => (
-        <Sequence
-          from={Math.floor(layer.start * fps)}
-          durationInFrames={Math.ceil(
-            (layer.introDuration + layer.mainDuration + layer.outroDuration) * fps
-          )}
-          key={layer.id}
-        >
-          {layer.type === 'highlight' && <HighlightEffect layer={layer} />}
-          {layer.type === 'blur' && <BlurEffect layer={layer} />}
-        </Sequence>
-      ))}
+      {sortedLayers
+        .filter(layer => layer.type === 'highlight')
+        .map(layer => (
+          <Sequence
+            from={Math.floor(layer.start * fps)}
+            durationInFrames={Math.ceil(
+              (layer.introDuration + layer.mainDuration + layer.outroDuration) * fps
+            )}
+            key={layer.id}
+          >
+            <HighlightEffect layer={layer} />
+          </Sequence>
+        ))}
     </AbsoluteFill>
   );
 };
